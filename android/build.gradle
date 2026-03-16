@@ -1,0 +1,43 @@
+group = "com.example.flutter_concrete"
+version = "1.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.11.1")
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+apply from: "../cargokit/gradle/plugin.gradle"
+
+android {
+    namespace = "com.example.flutter_concrete"
+    compileSdk = 36
+    ndkVersion = android.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdk = 24
+    }
+}
+
+cargokit {
+    manifestDir = "../rust"
+    libname = "fhe_client"
+}

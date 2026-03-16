@@ -1,0 +1,39 @@
+[package]
+name = "fhe_client"
+version = "0.1.0"
+edition = "2021"
+description = "Native TFHE-rs FHE client for Flutter — iOS & Android compatible"
+
+[lib]
+name = "fhe_client"
+# staticlib  → iOS (linked into the app binary via XCFramework)
+# cdylib     → Android (.so) and Linux (.so) for desktop dev
+crate-type = ["staticlib", "cdylib"]
+
+# ── Core dependencies ─────────────────────────────────────────────────────────
+# Same tfhe-rs git revision used by concrete-ml-extensions (cml-ext) 0.2.0
+# so ciphertexts/keys are binary-compatible with the server-side Python stack.
+#
+# NOTE: Platform acceleration features (x86_64-unix, aarch64-unix) are intentionally
+# omitted from the default config to support cross-compilation without cargo resolving
+# all platform variants simultaneously.  Enable them for production builds via:
+#   RUSTFLAGS="--cfg tfhe_feature_x86_64_unix" cargo build --release
+# or by setting features in the build script.
+[dependencies]
+bincode = "1.3.3"
+serde = { version = "1.0", features = ["derive"] }
+capnp = "0.19"
+bytemuck = "1"
+
+[build-dependencies]
+capnpc = "0.19"
+
+[dependencies.tfhe]
+git = "https://github.com/zama-ai/tfhe-rs.git"
+rev = "1ec21a5e0b7c12165aa7e556c01e730c3117765a"
+features = ["integer"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
