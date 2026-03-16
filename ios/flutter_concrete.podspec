@@ -21,7 +21,7 @@ Pod::Spec.new do |s|
 
   s.script_phase = {
     :name => 'Build Rust library',
-    :script => 'bash "${PODS_TARGET_SRCROOT}/cargokit/build_pod.sh" ../rust fhe_client',
+    :script => 'bash "${PODS_TARGET_SRCROOT}/../cargokit/build_pod.sh" ../rust fhe_client',
     :execution_position => :before_compile,
     :input_files => ['${BUILT_PRODUCTS_DIR}/cargokit_phony'],
     :output_files => ['${BUILT_PRODUCTS_DIR}/cargokit_phony_out'],
