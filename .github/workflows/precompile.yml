@@ -4,6 +4,9 @@ on:
 
 name: Precompile Binaries
 
+permissions:
+  contents: write
+
 jobs:
   Precompile:
     runs-on: ${{ matrix.os }}
