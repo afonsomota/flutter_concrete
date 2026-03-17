@@ -60,7 +60,7 @@ class ClientZipParser {
     final output = OutputQuantParam(
       scale: _extractFloat(outSv['scale']),
       zeroPoint: _extractInt(outSv['zero_point']),
-      offset: _extractInt(outSv['offset']),
+      offset: outSv.containsKey('offset') ? _extractInt(outSv['offset']) : 0,
     );
 
     return QuantizationParams(input: input, output: output);
