@@ -42,6 +42,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRIVATE_KEY: ${{ secrets.PRECOMPILE_PRIVATE_KEY }}
+      - name: Install Android NDK
+        if: matrix.os == 'ubuntu-latest'
+        run: ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.3.11075529"
       - name: Precompile (Linux — Android + Linux targets)
         if: matrix.os == 'ubuntu-latest'
         run: dart run build_tool precompile-binaries -v --manifest-dir=../../rust --repository=afonsomota/flutter_concrete --android-sdk-location=$ANDROID_SDK_ROOT --android-ndk-version=26.3.11075529 --android-min-sdk-version=21
