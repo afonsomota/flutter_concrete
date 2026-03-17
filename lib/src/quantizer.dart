@@ -31,27 +31,6 @@ class QuantizationParams {
 
   const QuantizationParams({required this.input, required this.output});
 
-  /// Parse from a decoded JSON map (the caller loads the JSON file).
-  factory QuantizationParams.fromJson(Map<String, dynamic> map) {
-    final inputList = map['input'] as List<dynamic>;
-    final input = inputList.map((e) {
-      final m = e as Map<String, dynamic>;
-      return InputQuantParam(
-        scale: (m['scale'] as num).toDouble(),
-        zeroPoint: (m['zero_point'] as num).toInt(),
-      );
-    }).toList();
-
-    final out = map['output'] as Map<String, dynamic>;
-    final output = OutputQuantParam(
-      scale: (out['scale'] as num).toDouble(),
-      zeroPoint: (out['zero_point'] as num).toInt(),
-      offset: (out['offset'] as num).toInt(),
-    );
-
-    return QuantizationParams(input: input, output: output);
-  }
-
   /// Quantize float feature vector to uint8 using per-feature input params.
   ///
   /// Formula: q = round(float / scale) + zero_point, clamped to [0, 255].

@@ -5,6 +5,4 @@
 library flutter_concrete;
 
 export 'src/concrete_client.dart' show ConcreteClient;
-export 'src/fhe_native.dart' show FheNative, KeygenResult;
-export 'src/quantizer.dart'
-    show QuantizationParams, InputQuantParam, OutputQuantParam;
+export 'src/key_storage.dart' show KeyStorage;
