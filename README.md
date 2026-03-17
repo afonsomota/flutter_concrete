@@ -7,24 +7,24 @@ The Rust library builds automatically during `flutter build` thanks to [Cargokit
 ## How it works
 
 ```
-Your App                          flutter_concrete                   Server
-───────                           ────────────────                   ──────
-                                       │
-Load quantization_params.json ───►  ConcreteClient
-                                       │
-                              generateKeys() ──► clientKey (secret, on-device)
-                                                 serverKey (upload to server) ──────►
-                                       │
-Float32 features ────────────►  quantizeAndEncrypt()
-                                  quantize → uint8
-                                  encrypt  → FheUint8[]
-                                  ciphertext bytes ─────────────────────────────────► FHE inference
-                                       │                                              on encrypted data
-                              decryptAndDequantize() ◄──────────────────────────────── encrypted result
-                                  decrypt  → int8 scores
-                                  dequantize → float64
-                                       │
-                              Float64 class scores ◄──
+Your App                              flutter_concrete
+───────                               ────────────────
+                                           │
+Load client.zip from assets ──────►  setup(zipBytes, storage)
+                                       parse serialized_processing.json
+                                       restore or generate keys
+                                     ◄── isReady = true
+                                           │
+Get serverKey ◄────────────────────  serverKey / serverKeyBase64
+Upload to your server (your code)          │
+                                           │
+Float32 features ──────────────────►  quantizeAndEncrypt()
+Uint8List ciphertext ◄──────────────       │
+Send to server (your code)                 │
+Receive result (your code)                 │
+Uint8List encrypted result ────────►  decryptAndDequantize()
+Float64 class scores ◄──────────────       │
+Interpret scores (your code)
 ```
 
 The server performs ML inference on **encrypted** data — it never sees plaintext inputs or predictions.
@@ -57,27 +57,35 @@ dependencies:
 ## Usage
 
 ```dart
-import 'dart:convert';
 import 'package:flutter_concrete/flutter_concrete.dart';
 
-// 1. Load your quantization params (from Concrete ML compilation)
-final json = jsonDecode(await loadQuantParamsJson());
-final quantParams = QuantizationParams.fromJson(json);
+// 1. Implement KeyStorage (e.g. wrapping flutter_secure_storage)
+class MyKeyStorage implements KeyStorage {
+  @override
+  Future<Uint8List?> read(String key) async { /* ... */ }
+  @override
+  Future<void> write(String key, Uint8List value) async { /* ... */ }
+  @override
+  Future<void> delete(String key) async { /* ... */ }
+}
 
-// 2. Create the client
-final client = ConcreteClient(quantParams: quantParams);
+// 2. Create client and set up from Concrete ML's client.zip
+final client = ConcreteClient();
+final zipBytes = await loadClientZipFromAssets(); // your asset loading
+await client.setup(
+  clientZipBytes: zipBytes,
+  storage: MyKeyStorage(),
+);
+// First call generates keys (~10-60s on mobile), subsequent calls restore.
 
-// 3. Generate keys (CPU-intensive, ~10-60s on mobile — cache the result!)
-final keys = client.generateKeys();
-// keys.clientKey → store securely on device
-// keys.serverKey → upload to your backend (POST /fhe/key)
-
-// Or restore previously persisted keys:
-// client.restoreKeys(clientKey: savedClientKey, serverKey: savedServerKey);
+// 3. Get server key to upload to your backend
+final serverKey = client.serverKey;       // Uint8List
+final serverKeyB64 = client.serverKeyBase64; // String (cached)
+// Upload to your server however you want
 
 // 4. Encrypt features
 final ciphertext = client.quantizeAndEncrypt(featureVector);
-// Send ciphertext to server for FHE inference
+// Send ciphertext to your server for FHE inference
 
 // 5. Decrypt server response
 final scores = client.decryptAndDequantize(encryptedResult);
@@ -90,53 +98,25 @@ final scores = client.decryptAndDequantize(encryptedResult);
 
 | Method | Description |
 |--------|-------------|
-| `ConcreteClient({required QuantizationParams quantParams})` | Create client with quantization config |
-| `KeygenResult generateKeys()` | Generate TFHE-rs keypair (~10-60s on mobile) |
-| `restoreKeys({clientKey, serverKey})` | Restore previously persisted keys |
-| `Uint8List quantizeAndEncrypt(Float32List features)` | Quantize + FHE encrypt |
-| `Float64List decryptAndDequantize(Uint8List ciphertext)` | FHE decrypt + dequantize |
+| `Future<void> setup({clientZipBytes, storage})` | Parse `client.zip`, generate/restore keys |
+| `void reset()` | Clear state so `setup()` can be called with a different model |
+| `bool get isReady` | True after `setup()` completes |
+| `Uint8List get serverKey` | Raw evaluation key bytes (throws before setup) |
+| `String get serverKeyBase64` | Base64-encoded server key (cached) |
+| `Uint8List quantizeAndEncrypt(Float32List)` | Quantize + FHE encrypt |
+| `Float64List decryptAndDequantize(Uint8List)` | FHE decrypt + dequantize |
 
-### `QuantizationParams`
-
-| Method | Description |
-|--------|-------------|
-| `QuantizationParams.fromJson(Map<String, dynamic>)` | Parse from `quantization_params.json` |
-| `Uint8List quantizeInputs(Float32List)` | Float → uint8 per-feature quantization |
-| `Float64List dequantizeOutputs(Int8List)` | Int8 → float64 dequantization |
-
-### `FheNative` (low-level)
-
-Direct FFI bindings if you need raw access without quantization:
+### `KeyStorage` (abstract — you implement this)
 
 | Method | Description |
 |--------|-------------|
-| `KeygenResult keygen()` | Raw key generation |
-| `Uint8List encryptU8(Uint8List clientKey, Uint8List values)` | Encrypt uint8 values |
-| `Int8List decryptI8(Uint8List clientKey, Uint8List ciphertext)` | Decrypt to int8 scores |
-
-## Quantization params format
-
-The `quantization_params.json` file is produced by Concrete ML during FHE compilation:
-
-```json
-{
-  "input": [
-    {"scale": 0.0123, "zero_point": 128},
-    {"scale": 0.0456, "zero_point": 130}
-  ],
-  "output": {
-    "scale": 0.0789,
-    "zero_point": 0,
-    "offset": 128
-  }
-}
-```
-
-- **Input**: one `{scale, zero_point}` per feature dimension
-- **Output**: single `{scale, zero_point, offset}` for all output classes
+| `Future<Uint8List?> read(String key)` | Read stored bytes, or null |
+| `Future<void> write(String key, Uint8List value)` | Persist bytes |
+| `Future<void> delete(String key)` | Delete entry |
 
 ## Compatibility
 
+- **Concrete ML**: Accepts standard `client.zip` from `FHEModelDev.save()`
 - **TFHE-rs**: Git revision `1ec21a5` (matching `concrete-ml-extensions` 0.2.0)
 - **Parameter set**: `V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64`
 - **Serialization**: bincode (ciphertexts), Cap'n Proto (evaluation keys)
@@ -144,15 +124,13 @@ The `quantization_params.json` file is produced by Concrete ML during FHE compil
 
 ## Known limitations
 
-1. **Hardcoded eval key topology** — key generation produces 4 BSKs and 8 KSKs matching a specific Concrete ML circuit. A different model/circuit would need different key parameters.
+1. **Hardcoded eval key topology** — key generation produces 4 BSKs and 8 KSKs matching a specific Concrete ML circuit. Future: parse `client.specs.json` for dynamic key topology.
 
-2. **uint8 input / int8 output only** — matches 8-bit quantization. Other bit widths (int8 input, uint8 output, 16-bit) are not yet supported.
+2. **uint8 input / int8 output only** — matches 8-bit quantization. Other bit widths are not yet supported.
 
-3. **No `client.zip` parsing** — expects pre-extracted `quantization_params.json`. Does not read from `client.zip` directly.
+3. **Single input/output tensor** — assumes one input and one output tensor per circuit.
 
-4. **Single input/output tensor** — assumes one input and one output tensor per circuit.
-
-5. **No precompiled binaries** — requires Rust toolchain on the build machine.
+4. **No precompiled binaries** — requires Rust toolchain on the build machine.
 
 ## License
 
