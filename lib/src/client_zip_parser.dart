@@ -26,7 +26,7 @@ class ClientZipParser {
 
     final procFile = archive.findFile('serialized_processing.json');
     if (procFile == null) {
-      throw FormatException(
+      throw const FormatException(
         'client.zip missing serialized_processing.json',
       );
     }
@@ -38,7 +38,7 @@ class ClientZipParser {
     final outputQuantizers = proc['output_quantizers'] as List<dynamic>;
 
     if (outputQuantizers.isEmpty) {
-      throw FormatException('client.zip has no output_quantizers');
+      throw const FormatException('client.zip has no output_quantizers');
     }
 
     // Parse input quantizers
