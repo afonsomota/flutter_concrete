@@ -39,6 +39,11 @@ void main() {
       expect(params.output.offset, isA<int>());
     });
 
+    test('parses nClasses from client.specs.json', () {
+      final params = ClientZipParser.parse(zipBytes);
+      expect(params.nClasses, 5);
+    });
+
     test('validates n_bits is 8', () {
       final badProc = {
         'input_quantizers': [

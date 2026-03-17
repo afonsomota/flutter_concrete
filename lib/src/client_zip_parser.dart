@@ -63,7 +63,31 @@ class ClientZipParser {
       offset: outSv.containsKey('offset') ? _extractInt(outSv['offset']) : 0,
     );
 
-    return QuantizationParams(input: input, output: output);
+    // Parse nClasses from client.specs.json (tfhers output shape).
+    int? nClasses;
+    final specsFile = archive.findFile('client.specs.json');
+    if (specsFile != null) {
+      final specs = jsonDecode(utf8.decode(specsFile.content as List<int>))
+          as Map<String, dynamic>;
+      final tfhersSpecs = specs['tfhers_specs'] as Map<String, dynamic>?;
+      if (tfhersSpecs != null) {
+        final outputShapes =
+            tfhersSpecs['output_shapes_per_func'] as Map<String, dynamic>?;
+        if (outputShapes != null && outputShapes.isNotEmpty) {
+          // First function's first output shape, e.g. [1, 5, 200].
+          final shapes = outputShapes.values.first as List<dynamic>;
+          if (shapes.isNotEmpty) {
+            final shape = shapes[0] as List<dynamic>;
+            // Shape is [batch, nClasses, nTrees] — extract nClasses.
+            if (shape.length >= 2) {
+              nClasses = (shape[1] as num).toInt();
+            }
+          }
+        }
+      }
+    }
+
+    return QuantizationParams(input: input, output: output, nClasses: nClasses);
   }
 
   /// Extract a float value that may be raw or wrapped in

@@ -29,7 +29,16 @@ class QuantizationParams {
   final List<InputQuantParam> input;
   final OutputQuantParam output;
 
-  const QuantizationParams({required this.input, required this.output});
+  /// Number of output classes (from FHE circuit output shape).
+  /// When set, [dequantizeOutputs] aggregates per-tree scores by summing
+  /// across trees for each class.
+  final int? nClasses;
+
+  const QuantizationParams({
+    required this.input,
+    required this.output,
+    this.nClasses,
+  });
 
   /// Quantize float feature vector to uint8 using per-feature input params.
   ///
@@ -50,10 +59,37 @@ class QuantizationParams {
 
   /// Dequantize raw int8 output scores to float64.
   ///
-  /// Formula: float = (raw + offset - zero_point) * scale.
+  /// For tree-ensemble models (XGBoost), the FHE circuit outputs one value
+  /// per class per tree. When [nClasses] is set and `rawScores.length` is a
+  /// multiple of it, the raw values are interpreted as shape
+  /// `(nClasses, nTrees)` and summed across trees to produce one score per
+  /// class.
+  ///
+  /// Formula per element: float = (raw + offset - zero_point) * scale.
   Float64List dequantizeOutputs(Int8List rawScores) {
-    final result = Float64List(rawScores.length);
     final p = output;
+
+    // Aggregate per-tree outputs when nClasses is known.
+    if (nClasses != null &&
+        nClasses! > 0 &&
+        rawScores.length > nClasses! &&
+        rawScores.length % nClasses! == 0) {
+      final nTrees = rawScores.length ~/ nClasses!;
+      final result = Float64List(nClasses!);
+      // Layout: class 0 × nTrees, class 1 × nTrees, …
+      for (int c = 0; c < nClasses!; c++) {
+        double sum = 0.0;
+        final base = c * nTrees;
+        for (int t = 0; t < nTrees; t++) {
+          sum += (rawScores[base + t] + p.offset - p.zeroPoint) * p.scale;
+        }
+        result[c] = sum;
+      }
+      return result;
+    }
+
+    // Fallback: no aggregation.
+    final result = Float64List(rawScores.length);
     for (int i = 0; i < rawScores.length; i++) {
       result[i] = (rawScores[i] + p.offset - p.zeroPoint) * p.scale;
     }
