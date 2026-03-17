@@ -1,0 +1,40 @@
+on:
+  push:
+    branches: [main]
+
+name: Precompile Binaries
+
+jobs:
+  Precompile:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dart-lang/setup-dart@v1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-apple-ios,aarch64-apple-ios-sim
+        if: matrix.os == 'macos-latest'
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.os == 'ubuntu-latest'
+      - name: Precompile (macOS — iOS + macOS targets)
+        if: matrix.os == 'macos-latest'
+        run: dart run build_tool precompile-binaries -v --manifest-dir=../../rust --repository=afonsomota/flutter_concrete
+        working-directory: cargokit/build_tool
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_KEY: ${{ secrets.PRECOMPILE_PRIVATE_KEY }}
+      - name: Precompile (Linux — Android + Linux targets)
+        if: matrix.os == 'ubuntu-latest'
+        run: dart run build_tool precompile-binaries -v --manifest-dir=../../rust --repository=afonsomota/flutter_concrete --android-sdk-location=$ANDROID_SDK_ROOT --android-ndk-version=26.3.11075529 --android-min-sdk-version=21
+        working-directory: cargokit/build_tool
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIVATE_KEY: ${{ secrets.PRECOMPILE_PRIVATE_KEY }}
