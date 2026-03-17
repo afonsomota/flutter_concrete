@@ -17,6 +17,13 @@ Pod::Spec.new do |s|
     'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
   }
+  # Force-load the Rust static library into the app binary so FFI symbols
+  # are available via DynamicLibrary.process(). The library search path
+  # lets the linker find the .a built by Cargokit without an absolute path.
+  s.user_target_xcconfig = {
+    'OTHER_LDFLAGS' => '$(inherited) -force_load $(PODS_CONFIGURATION_BUILD_DIR)/flutter_concrete/libfhe_client.a',
+    'LIBRARY_SEARCH_PATHS' => '$(inherited) $(PODS_CONFIGURATION_BUILD_DIR)/flutter_concrete',
+  }
   s.swift_version = '5.0'
 
   s.script_phase = {
