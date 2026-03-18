@@ -44,6 +44,18 @@ To set up: store the private signing key as `PRECOMPILE_PRIVATE_KEY` secret in t
 - **Serialization:** bincode for ciphertexts, Cap'n Proto for evaluation keys
 - **Key persistence:** app provides `KeyStorage` impl; plugin uses keys `fhe_client_key` and `fhe_server_key`
 
+### CiphertextFormat limitation (IMPORTANT)
+
+This plugin currently only supports `CiphertextFormat.TFHE_RS` wire format (raw TFHE-rs `FheUint8`/`FheInt8` ciphertexts). Concrete ML enforces that TFHE_RS requires `n_bits=8` at compilation time (see `concrete.ml.sklearn.base.py`), which produces much larger FHE circuits and slower inference.
+
+Concrete ML's default `CiphertextFormat.CONCRETE` supports any `n_bits` (e.g. 3), producing dramatically smaller and faster circuits. **Supporting CONCRETE format is the highest-priority enhancement** for this plugin. This would require:
+
+1. **Rust side:** Replace raw TFHE-rs encrypt/decrypt with Concrete's `Value`-based serialization (the format used by `concrete-python`'s `PublicArguments`/`PublicResult` types)
+2. **Dart side:** Update `ConcreteClient.quantizeAndEncrypt` / `decryptAndDequantize` to handle the Concrete wire format
+3. **Serialization:** Concrete uses its own protobuf-based serialization for ciphertexts and evaluation keys, distinct from the bincode/Cap'n Proto used for TFHE-rs
+
+Until this is implemented, the emotion_ml pipeline compiles with `CiphertextFormat.CONCRETE` and `n_bits=3`, and end-to-end FHE works only via the Python `FHEModelClient`/`FHEModelServer` protocol.
+
 ## FHE Flow
 
 1. `ConcreteClient.setup(clientZipBytes, storage)` → parse ZIP, keygen or restore keys
