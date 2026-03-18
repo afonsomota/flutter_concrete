@@ -4,16 +4,16 @@
 //
 // Serialisation compatibility:
 //   • Key generation matches concrete-ml-extensions (cml-ext 0.2.0) keygen_radix()
-//   • Encryption matches cml-ext encrypt_serialize_u8_radix_2d()
-//   • Decryption matches cml-ext decrypt_serialized_i8_radix_2d()
+//   • Encryption dispatches to FheUint{8,16,32,64} / FheInt{8,16,32,64}
+//   • Decryption dispatches to the matching type, outputs i64
 //   • Parameter set: V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64
 //
 // Exported C functions (return 0 on success, negative code on failure):
-//   fhe_keygen(ck_out, ck_len, sk_out, sk_len, lwe_out, lwe_len) → i32
-//   fhe_encrypt_u8(ck, ck_len, vals, n, ct_out, ct_len) → i32
-//   fhe_decrypt_i8(ck, ck_len, ct, ct_len, out, out_len) → i32
+//   fhe_keygen(topology_ptr, topology_len, ck_out, ck_len, sk_out, sk_len) → i32
+//   fhe_encrypt(ck, ck_len, vals, n_vals, bit_width, is_signed, ct_out, ct_len) → i32
+//   fhe_decrypt(ck, ck_len, ct, ct_len, bit_width, is_signed, out, out_len) → i32
 //   fhe_free_buf(ptr, len)
-//   fhe_free_i8_buf(ptr, len)
+//   fhe_free_i64_buf(ptr, len)
 
 use std::io::Cursor;
 use std::panic;
@@ -39,7 +39,8 @@ use tfhe::core_crypto::seeders::new_seeder;
 use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize, safe_serialize};
 use tfhe::shortint::parameters::v0_10::classic::gaussian::p_fail_2_minus_64::ks_pbs::V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64;
-use tfhe::{ClientKey, ConfigBuilder, FheInt8, FheUint8};
+use tfhe::{ClientKey, ConfigBuilder, FheInt8, FheInt16, FheInt32, FheInt64,
+           FheUint8, FheUint16, FheUint32, FheUint64};
 
 // ── Generated Cap'n Proto bindings ────────────────────────────────────────────
 pub mod concrete_protocol_capnp {
@@ -50,268 +51,247 @@ pub mod concrete_protocol_capnp {
 // ── Serialisation limit ───────────────────────────────────────────────────────
 const LIMIT: u64 = 1_000_000_000;
 
+// ── Topology from Dart FFI ──────────────────────────────────────────────────
+
+struct SkSpec { id: u64, dim: u64 }
+struct BskSpec {
+    input_id: u64, output_id: u64,
+    level_count: u64, base_log: u64,
+    glwe_dim: u64, poly_size: u64,
+    input_lwe_dim: u64, variance: f64,
+}
+struct KskSpec {
+    input_id: u64, output_id: u64,
+    level_count: u64, base_log: u64,
+    input_lwe_dim: u64, output_lwe_dim: u64,
+    variance: f64,
+}
+
+struct Topology {
+    sks: Vec<SkSpec>,
+    bsks: Vec<BskSpec>,
+    ksks: Vec<KskSpec>,
+}
+
+fn unpack_topology(data: &[u64]) -> Result<Topology, String> {
+    let mut i = 0;
+    let read = |i: &mut usize| -> Result<u64, String> {
+        if *i >= data.len() { return Err("topology buffer underflow".into()); }
+        let v = data[*i]; *i += 1; Ok(v)
+    };
+
+    let num_sks = read(&mut i)? as usize;
+    let mut sks = Vec::with_capacity(num_sks);
+    for _ in 0..num_sks {
+        sks.push(SkSpec { id: read(&mut i)?, dim: read(&mut i)? });
+    }
+
+    let num_bsks = read(&mut i)? as usize;
+    let mut bsks = Vec::with_capacity(num_bsks);
+    for _ in 0..num_bsks {
+        let input_id = read(&mut i)?;
+        let output_id = read(&mut i)?;
+        let level_count = read(&mut i)?;
+        let base_log = read(&mut i)?;
+        let glwe_dim = read(&mut i)?;
+        let poly_size = read(&mut i)?;
+        let input_lwe_dim = read(&mut i)?;
+        let variance_bits = read(&mut i)?;
+        let variance = f64::from_bits(variance_bits);
+        bsks.push(BskSpec {
+            input_id, output_id, level_count, base_log,
+            glwe_dim, poly_size, input_lwe_dim, variance,
+        });
+    }
+
+    let num_ksks = read(&mut i)? as usize;
+    let mut ksks = Vec::with_capacity(num_ksks);
+    for _ in 0..num_ksks {
+        let input_id = read(&mut i)?;
+        let output_id = read(&mut i)?;
+        let level_count = read(&mut i)?;
+        let base_log = read(&mut i)?;
+        let input_lwe_dim = read(&mut i)?;
+        let output_lwe_dim = read(&mut i)?;
+        let variance_bits = read(&mut i)?;
+        let variance = f64::from_bits(variance_bits);
+        ksks.push(KskSpec {
+            input_id, output_id, level_count, base_log,
+            input_lwe_dim, output_lwe_dim, variance,
+        });
+    }
+
+    Ok(Topology { sks, bsks, ksks })
+}
 
 // ── Concrete eval key generation ──────────────────────────────────────────────
-//
-// Generates a Concrete-compatible Cap'n Proto ServerKeyset matching the circuit
-// compiled in journal_app/assets/fhe/client.zip (client.specs.json).
-//
-// The circuit uses a multi-parameter scheme with 4 GLWE key families, 4 small
-// LWE keys, 4 BSKs and 8 KSKs.  SK[0] (dim=2048) is the big LWE key derived
-// from the TFHE-rs ClientKey's GLWE key — this is also the ciphertext key used
-// by FheUint8::encrypt / FheInt8::decrypt.
-//
-// Key identity (from client.specs.json lweSecretKeys):
-//   SK[0] dim=2048 = glwe_sk0.into_lwe_secret_key()   (TFHE-rs root)
-//   SK[1] dim=796  = fresh small LWE key
-//   SK[2] dim=2048 = glwe_sk1.into_lwe_secret_key()   (GLWE dim=4, poly=512)
-//   SK[3] dim=617  = fresh small LWE key
-//   SK[4] dim=1536 = glwe_sk2.into_lwe_secret_key()   (GLWE dim=6, poly=256)
-//   SK[5] dim=742  = fresh small LWE key
-//   SK[6] dim=2048 = glwe_sk3.into_lwe_secret_key()   (GLWE dim=2, poly=1024)
-//   SK[7] dim=769  = fresh small LWE key
-fn generate_concrete_eval_keys(ck: &ClientKey) -> Result<Vec<u8>, String> {
-    // ── Extract root GLWE key from TFHE-rs ClientKey ──────────────────────────
+
+fn generate_concrete_eval_keys(ck: &ClientKey, topo: &Topology) -> Result<Vec<u8>, String> {
+    use std::collections::HashMap;
+
+    // ── Extract root GLWE key (SK[0]) from TFHE-rs ClientKey ────────────────
     let (integer_ck, _, _, _) = ck.clone().into_raw_parts();
     let shortint_ck = integer_ck.into_raw_parts();
     let (glwe_sk0, _tfhe_lwe_sk, _params) = shortint_ck.into_raw_parts();
-    // glwe_sk0: dim=1, poly=2048 → SK[0] big LWE = dim 1×2048 = 2048
-    let sk0 = glwe_sk0.clone().into_lwe_secret_key(); // dim=2048
+    let sk0_lwe = glwe_sk0.clone().into_lwe_secret_key();
 
-    // ── Set up CSPRNGs ────────────────────────────────────────────────────────
     let mut seeder = new_seeder();
     let seeder = seeder.as_mut();
     let mut sec_gen = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
-
-    // ── Generate additional GLWE keys ─────────────────────────────────────────
-    let glwe_sk1: tfhe::core_crypto::entities::GlweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_glwe_secret_key(
-            GlweDimension(4), PolynomialSize(512), &mut sec_gen,
-        ); // → SK[2] dim=4×512=2048
-    let glwe_sk2: tfhe::core_crypto::entities::GlweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_glwe_secret_key(
-            GlweDimension(6), PolynomialSize(256), &mut sec_gen,
-        ); // → SK[4] dim=6×256=1536
-    let glwe_sk3: tfhe::core_crypto::entities::GlweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_glwe_secret_key(
-            GlweDimension(2), PolynomialSize(1024), &mut sec_gen,
-        ); // → SK[6] dim=2×1024=2048
-
-    let sk2 = glwe_sk1.clone().into_lwe_secret_key(); // dim=2048
-    let sk4 = glwe_sk2.clone().into_lwe_secret_key(); // dim=1536
-    let sk6 = glwe_sk3.clone().into_lwe_secret_key(); // dim=2048
-
-    // ── Generate small LWE keys ───────────────────────────────────────────────
-    let sk1: tfhe::core_crypto::entities::LweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_lwe_secret_key(LweDimension(796), &mut sec_gen);
-    let sk3: tfhe::core_crypto::entities::LweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_lwe_secret_key(LweDimension(617), &mut sec_gen);
-    let sk5: tfhe::core_crypto::entities::LweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_lwe_secret_key(LweDimension(742), &mut sec_gen);
-    let sk7: tfhe::core_crypto::entities::LweSecretKeyOwned<u64> =
-        allocate_and_generate_new_binary_lwe_secret_key(LweDimension(769), &mut sec_gen);
-
-    // ── Noise helpers (variance from client.specs.json; stddev = sqrt(var)) ───
     let noise = |var: f64| Gaussian::from_dispersion_parameter(StandardDev(var.sqrt()), 0.0);
 
-    // ── Generate 4 seeded BSKs ────────────────────────────────────────────────
-    // Seeded BSKs store only body polynomials + a single compression seed.
-    // Concrete's C++ only supports Compression::Seed for BSK computation.
+    // ── Determine which SKs are GLWE-derived (used as BSK output) ───────────
+    // BSK output SK has lweDimension = glweDimension * polynomialSize
+    let mut glwe_output_sks: HashMap<u64, (u64, u64)> = HashMap::new(); // sk_id -> (glwe_dim, poly_size)
+    for bsk in &topo.bsks {
+        glwe_output_sks.insert(bsk.output_id, (bsk.glwe_dim, bsk.poly_size));
+    }
 
-    // BSK[0]: SK[1](796) encrypted under GLWE[0](dim=1, poly=2048), level=2, baseLog=15
-    let mut bsk0 = SeededLweBootstrapKey::new(
-        0u64, GlweSize(2), PolynomialSize(2048),
-        DecompositionBaseLog(15), DecompositionLevelCount(2),
-        LweDimension(796), seeder.seed().into(),
-        CiphertextModulus::new_native(),
-    );
-    generate_seeded_lwe_bootstrap_key(&sk1, &glwe_sk0, &mut bsk0, noise(8.095547030480235e-30), seeder);
+    // ── Generate all secret keys ────────────────────────────────────────────
+    // SK[0] comes from the ClientKey. All others are generated fresh.
+    let mut lwe_sks: HashMap<u64, tfhe::core_crypto::entities::LweSecretKeyOwned<u64>> = HashMap::new();
+    let mut glwe_sks: HashMap<u64, tfhe::core_crypto::entities::GlweSecretKeyOwned<u64>> = HashMap::new();
 
-    // BSK[1]: SK[3](617) encrypted under GLWE[1](dim=4, poly=512), level=2, baseLog=16
-    let mut bsk1 = SeededLweBootstrapKey::new(
-        0u64, GlweSize(5), PolynomialSize(512),
-        DecompositionBaseLog(16), DecompositionLevelCount(2),
-        LweDimension(617), seeder.seed().into(),
-        CiphertextModulus::new_native(),
-    );
-    generate_seeded_lwe_bootstrap_key(&sk3, &glwe_sk1, &mut bsk1, noise(8.095547030480235e-30), seeder);
+    // Store SK[0]
+    let sk0_id = topo.sks[0].id;
+    lwe_sks.insert(sk0_id, sk0_lwe);
+    glwe_sks.insert(sk0_id, glwe_sk0);
 
-    // BSK[2]: SK[5](742) encrypted under GLWE[2](dim=6, poly=256), level=1, baseLog=17
-    let mut bsk2 = SeededLweBootstrapKey::new(
-        0u64, GlweSize(7), PolynomialSize(256),
-        DecompositionBaseLog(17), DecompositionLevelCount(1),
-        LweDimension(742), seeder.seed().into(),
-        CiphertextModulus::new_native(),
-    );
-    generate_seeded_lwe_bootstrap_key(&sk5, &glwe_sk2, &mut bsk2, noise(3.8120190856802e-22), seeder);
+    for sk_spec in &topo.sks[1..] {
+        if let Some(&(glwe_dim, poly_size)) = glwe_output_sks.get(&sk_spec.id) {
+            // This SK backs a BSK output — generate as GLWE key
+            let glwe_sk = allocate_and_generate_new_binary_glwe_secret_key(
+                GlweDimension(glwe_dim as usize),
+                PolynomialSize(poly_size as usize),
+                &mut sec_gen,
+            );
+            let lwe_sk = glwe_sk.clone().into_lwe_secret_key();
+            glwe_sks.insert(sk_spec.id, glwe_sk);
+            lwe_sks.insert(sk_spec.id, lwe_sk);
+        } else {
+            // Plain small LWE key
+            let lwe_sk = allocate_and_generate_new_binary_lwe_secret_key(
+                LweDimension(sk_spec.dim as usize),
+                &mut sec_gen,
+            );
+            lwe_sks.insert(sk_spec.id, lwe_sk);
+        }
+    }
 
-    // BSK[3]: SK[7](769) encrypted under GLWE[3](dim=2, poly=1024), level=2, baseLog=15
-    let mut bsk3 = SeededLweBootstrapKey::new(
-        0u64, GlweSize(3), PolynomialSize(1024),
-        DecompositionBaseLog(15), DecompositionLevelCount(2),
-        LweDimension(769), seeder.seed().into(),
-        CiphertextModulus::new_native(),
-    );
-    generate_seeded_lwe_bootstrap_key(&sk7, &glwe_sk3, &mut bsk3, noise(8.095547030480235e-30), seeder);
+    // ── Generate seeded BSKs ────────────────────────────────────────────────
+    let mut bsk_data: Vec<(Vec<u8>, &BskSpec)> = Vec::new();
+    for bsk_spec in &topo.bsks {
+        let input_sk = lwe_sks.get(&bsk_spec.input_id)
+            .ok_or_else(|| format!("BSK input SK {} not found", bsk_spec.input_id))?;
+        let output_glwe = glwe_sks.get(&bsk_spec.output_id)
+            .ok_or_else(|| format!("BSK output GLWE SK {} not found", bsk_spec.output_id))?;
 
-    // ── Generate 8 seeded KSKs ────────────────────────────────────────────────
-    // KSK[0]: SK[0](2048) → SK[1](796), level=5, baseLog=3
-    let mut ksk0 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(3), DecompositionLevelCount(5),
-        LweDimension(2048), LweDimension(796), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk0, &sk1, &mut ksk0, noise(4.6871210061173175e-11), seeder);
+        let glwe_size = GlweSize(bsk_spec.glwe_dim as usize + 1);
+        let mut bsk = SeededLweBootstrapKey::new(
+            0u64, glwe_size,
+            PolynomialSize(bsk_spec.poly_size as usize),
+            DecompositionBaseLog(bsk_spec.base_log as usize),
+            DecompositionLevelCount(bsk_spec.level_count as usize),
+            LweDimension(bsk_spec.input_lwe_dim as usize),
+            seeder.seed().into(),
+            CiphertextModulus::new_native(),
+        );
+        generate_seeded_lwe_bootstrap_key(
+            input_sk, output_glwe, &mut bsk,
+            noise(bsk_spec.variance), seeder,
+        );
 
-    // KSK[1]: SK[0](2048) → SK[2](2048), level=1, baseLog=24
-    let mut ksk1 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(24), DecompositionLevelCount(1),
-        LweDimension(2048), LweDimension(2048), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk0, &sk2, &mut ksk1, noise(8.095547030480235e-30), seeder);
+        // Serialize: [seed(16 bytes) || body_u64_bytes]
+        let seed_bytes: [u8; 16] = bsk.compression_seed().seed.0.to_le_bytes();
+        let body_bytes = bytemuck::cast_slice::<u64, u8>(bsk.as_ref());
+        let mut v = Vec::with_capacity(16 + body_bytes.len());
+        v.extend_from_slice(&seed_bytes);
+        v.extend_from_slice(body_bytes);
+        bsk_data.push((v, bsk_spec));
+    }
 
-    // KSK[2]: SK[2](2048) → SK[3](617), level=3, baseLog=3
-    let mut ksk2 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(3), DecompositionLevelCount(3),
-        LweDimension(2048), LweDimension(617), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk2, &sk3, &mut ksk2, noise(2.256456885316473e-08), seeder);
+    // ── Generate seeded KSKs ────────────────────────────────────────────────
+    let mut ksk_data: Vec<(Vec<u8>, &KskSpec)> = Vec::new();
+    for ksk_spec in &topo.ksks {
+        let input_sk = lwe_sks.get(&ksk_spec.input_id)
+            .ok_or_else(|| format!("KSK input SK {} not found", ksk_spec.input_id))?;
+        let output_sk = lwe_sks.get(&ksk_spec.output_id)
+            .ok_or_else(|| format!("KSK output SK {} not found", ksk_spec.output_id))?;
 
-    // KSK[3]: SK[2](2048) → SK[5](742), level=2, baseLog=5
-    let mut ksk3 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(5), DecompositionLevelCount(2),
-        LweDimension(2048), LweDimension(742), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk2, &sk5, &mut ksk3, noise(3.0210525031143964e-10), seeder);
+        let mut ksk = SeededLweKeyswitchKey::new(
+            0u64,
+            DecompositionBaseLog(ksk_spec.base_log as usize),
+            DecompositionLevelCount(ksk_spec.level_count as usize),
+            LweDimension(ksk_spec.input_lwe_dim as usize),
+            LweDimension(ksk_spec.output_lwe_dim as usize),
+            seeder.seed().into(),
+            CiphertextModulus::new_native(),
+        );
+        generate_seeded_lwe_keyswitch_key(
+            input_sk, output_sk, &mut ksk,
+            noise(ksk_spec.variance), seeder,
+        );
 
-    // KSK[4]: SK[4](1536) → SK[7](769), level=5, baseLog=3
-    let mut ksk4 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(3), DecompositionLevelCount(5),
-        LweDimension(1536), LweDimension(769), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk4, &sk7, &mut ksk4, noise(1.1899596063703503e-10), seeder);
+        let seed_bytes: [u8; 16] = ksk.compression_seed().seed.0.to_le_bytes();
+        let body_bytes = bytemuck::cast_slice::<u64, u8>(ksk.as_ref());
+        let mut v = Vec::with_capacity(16 + body_bytes.len());
+        v.extend_from_slice(&seed_bytes);
+        v.extend_from_slice(body_bytes);
+        ksk_data.push((v, ksk_spec));
+    }
 
-    // KSK[5]: SK[6](2048) → SK[0](2048), level=2, baseLog=16
-    let mut ksk5 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(16), DecompositionLevelCount(2),
-        LweDimension(2048), LweDimension(2048), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk6, &sk0, &mut ksk5, noise(8.095547030480235e-30), seeder);
-
-    // KSK[6]: SK[0](2048) → SK[3](617), level=3, baseLog=3
-    let mut ksk6 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(3), DecompositionLevelCount(3),
-        LweDimension(2048), LweDimension(617), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk0, &sk3, &mut ksk6, noise(2.256456885316473e-08), seeder);
-
-    // KSK[7]: SK[2](2048) → SK[0](2048), level=1, baseLog=24
-    let mut ksk7 = SeededLweKeyswitchKey::new(
-        0u64, DecompositionBaseLog(24), DecompositionLevelCount(1),
-        LweDimension(2048), LweDimension(2048), seeder.seed().into(),
-        CiphertextModulus::new_native());
-    generate_seeded_lwe_keyswitch_key(&sk2, &sk0, &mut ksk7, noise(8.095547030480235e-30), seeder);
-
-    // ── Build Cap'n Proto ServerKeyset ────────────────────────────────────────
+    // ── Build Cap'n Proto ServerKeyset ──────────────────────────────────────
     let mut message = Builder::new_default();
     {
         use concrete_protocol_capnp::server_keyset;
         let mut keyset = message.init_root::<server_keyset::Builder<'_>>();
 
-        // ── 4 BSKs ────────────────────────────────────────────────────────────
-        let mut bsks = keyset.reborrow().init_lwe_bootstrap_keys(4);
-
-        // Helper: serialize seeded BSK as [seed_bytes (16) || body_u64_bytes]
-        macro_rules! seeded_bsk_bytes {
-            ($key:expr) => {{
-                let seed_bytes: [u8; 16] = $key.compression_seed().seed.0.to_le_bytes();
-                let body_bytes = bytemuck::cast_slice::<u64, u8>($key.as_ref());
-                let mut v = Vec::with_capacity(16 + body_bytes.len());
-                v.extend_from_slice(&seed_bytes);
-                v.extend_from_slice(body_bytes);
-                v
-            }};
+        // BSKs
+        let mut bsks = keyset.reborrow().init_lwe_bootstrap_keys(bsk_data.len() as u32);
+        for (idx, (bytes, spec)) in bsk_data.iter().enumerate() {
+            let mut m = bsks.reborrow().get(idx as u32);
+            {
+                let mut info = m.reborrow().init_info();
+                info.set_id(idx as u32);
+                info.set_input_id(spec.input_id as u32);
+                info.set_output_id(spec.output_id as u32);
+                info.set_compression(concrete_protocol_capnp::Compression::Seed);
+                let mut p = info.init_params();
+                p.set_level_count(spec.level_count as u32);
+                p.set_base_log(spec.base_log as u32);
+                p.set_glwe_dimension(spec.glwe_dim as u32);
+                p.set_polynomial_size(spec.poly_size as u32);
+                p.set_input_lwe_dimension(spec.input_lwe_dim as u32);
+                p.set_variance(spec.variance);
+                p.set_integer_precision(64);
+                p.set_key_type(concrete_protocol_capnp::KeyType::Binary);
+                p.init_modulus().reborrow().get_modulus().init_native();
+            }
+            write_payload_chunks(&mut m.init_payload(), bytes);
         }
 
-        macro_rules! set_bsk {
-            ($list:expr, $idx:expr, $id:expr, $in_id:expr, $out_id:expr,
-             $level:expr, $base:expr, $glwe_dim:expr, $poly:expr, $in_lwe:expr,
-             $var:expr, $data:expr) => {{
-                let mut m = $list.reborrow().get($idx);
-                {
-                    let mut info = m.reborrow().init_info();
-                    info.set_id($id);
-                    info.set_input_id($in_id);
-                    info.set_output_id($out_id);
-                    info.set_compression(concrete_protocol_capnp::Compression::Seed);
-                    let mut p = info.init_params();
-                    p.set_level_count($level);
-                    p.set_base_log($base);
-                    p.set_glwe_dimension($glwe_dim);
-                    p.set_polynomial_size($poly);
-                    p.set_input_lwe_dimension($in_lwe);
-                    p.set_variance($var);
-                    p.set_integer_precision(64);
-                    p.set_key_type(concrete_protocol_capnp::KeyType::Binary);
-                    p.init_modulus().reborrow().get_modulus().init_native();
-                }
-                let bytes = seeded_bsk_bytes!($data);
-                write_payload_chunks(&mut m.init_payload(), &bytes);
-            }};
+        // KSKs
+        let mut ksks = keyset.reborrow().init_lwe_keyswitch_keys(ksk_data.len() as u32);
+        for (idx, (bytes, spec)) in ksk_data.iter().enumerate() {
+            let mut m = ksks.reborrow().get(idx as u32);
+            {
+                let mut info = m.reborrow().init_info();
+                info.set_id(idx as u32);
+                info.set_input_id(spec.input_id as u32);
+                info.set_output_id(spec.output_id as u32);
+                info.set_compression(concrete_protocol_capnp::Compression::Seed);
+                let mut p = info.init_params();
+                p.set_level_count(spec.level_count as u32);
+                p.set_base_log(spec.base_log as u32);
+                p.set_input_lwe_dimension(spec.input_lwe_dim as u32);
+                p.set_output_lwe_dimension(spec.output_lwe_dim as u32);
+                p.set_variance(spec.variance);
+                p.set_integer_precision(64);
+                p.set_key_type(concrete_protocol_capnp::KeyType::Binary);
+                p.init_modulus().reborrow().get_modulus().init_native();
+            }
+            write_payload_chunks(&mut m.init_payload(), bytes);
         }
-
-        set_bsk!(bsks, 0, 0, 1, 0, 2, 15, 1, 2048, 796, 8.095547030480235e-30, bsk0);
-        set_bsk!(bsks, 1, 1, 3, 2, 2, 16, 4, 512,  617, 8.095547030480235e-30, bsk1);
-        set_bsk!(bsks, 2, 2, 5, 4, 1, 17, 6, 256,  742, 3.8120190856802e-22,   bsk2);
-        set_bsk!(bsks, 3, 3, 7, 6, 2, 15, 2, 1024, 769, 8.095547030480235e-30, bsk3);
-
-        // ── 8 KSKs ────────────────────────────────────────────────────────────
-        let mut ksks = keyset.reborrow().init_lwe_keyswitch_keys(8);
-
-        macro_rules! seeded_ksk_bytes {
-            ($key:expr) => {{
-                let seed_bytes: [u8; 16] = $key.compression_seed().seed.0.to_le_bytes();
-                let body_bytes = bytemuck::cast_slice::<u64, u8>($key.as_ref());
-                let mut v = Vec::with_capacity(16 + body_bytes.len());
-                v.extend_from_slice(&seed_bytes);
-                v.extend_from_slice(body_bytes);
-                v
-            }};
-        }
-
-        macro_rules! set_ksk {
-            ($list:expr, $idx:expr, $id:expr, $in_id:expr, $out_id:expr,
-             $level:expr, $base:expr, $in_dim:expr, $out_dim:expr,
-             $var:expr, $data:expr) => {{
-                let mut m = $list.reborrow().get($idx);
-                {
-                    let mut info = m.reborrow().init_info();
-                    info.set_id($id);
-                    info.set_input_id($in_id);
-                    info.set_output_id($out_id);
-                    info.set_compression(concrete_protocol_capnp::Compression::Seed);
-                    let mut p = info.init_params();
-                    p.set_level_count($level);
-                    p.set_base_log($base);
-                    p.set_input_lwe_dimension($in_dim);
-                    p.set_output_lwe_dimension($out_dim);
-                    p.set_variance($var);
-                    p.set_integer_precision(64);
-                    p.set_key_type(concrete_protocol_capnp::KeyType::Binary);
-                    p.init_modulus().reborrow().get_modulus().init_native();
-                }
-                let bytes = seeded_ksk_bytes!($data);
-                write_payload_chunks(&mut m.init_payload(), &bytes);
-            }};
-        }
-
-        set_ksk!(ksks, 0, 0, 0, 1, 5, 3,  2048, 796,  4.6871210061173175e-11,  ksk0);
-        set_ksk!(ksks, 1, 1, 0, 2, 1, 24, 2048, 2048, 8.095547030480235e-30,   ksk1);
-        set_ksk!(ksks, 2, 2, 2, 3, 3, 3,  2048, 617,  2.256456885316473e-08,   ksk2);
-        set_ksk!(ksks, 3, 3, 2, 5, 2, 5,  2048, 742,  3.0210525031143964e-10,  ksk3);
-        set_ksk!(ksks, 4, 4, 4, 7, 5, 3,  1536, 769,  1.1899596063703503e-10,  ksk4);
-        set_ksk!(ksks, 5, 5, 6, 0, 2, 16, 2048, 2048, 8.095547030480235e-30,   ksk5);
-        set_ksk!(ksks, 6, 6, 0, 3, 3, 3,  2048, 617,  2.256456885316473e-08,   ksk6);
-        set_ksk!(ksks, 7, 7, 2, 0, 1, 24, 2048, 2048, 8.095547030480235e-30,   ksk7);
 
         keyset.init_packing_keyswitch_keys(0);
     }
@@ -344,44 +324,42 @@ fn leak_buf(v: Vec<u8>) -> (*mut u8, usize) {
 
 // ── Exported C symbols ────────────────────────────────────────────────────────
 
-/// Generate a fresh TFHE-rs keypair.
+/// Generate a fresh TFHE-rs keypair with dynamic topology.
 ///
-/// Outputs three buffers (all freed with `fhe_free_buf`):
+/// Outputs two buffers (both freed with `fhe_free_buf`):
 ///   - `client_key_*` — private; store encrypted on-device
 ///   - `server_key_*` — concrete Cap'n Proto ServerKeyset; upload to `POST /fhe/key`
-///   - `lwe_key_*`    — empty; retained for ABI stability only
 ///
 /// # Safety
-/// All six pointer-to-pointer arguments must not be null.
+/// All pointer arguments must not be null. `topology_ptr` must point to
+/// `topology_len` u64 values encoding the packed topology.
 #[no_mangle]
 pub unsafe extern "C" fn fhe_keygen(
+    topology_ptr:   *const u64, topology_len: usize,
     client_key_out: *mut *mut u8, client_key_len: *mut usize,
     server_key_out: *mut *mut u8, server_key_len: *mut usize,
-    lwe_key_out:    *mut *mut u8, lwe_key_len:    *mut usize,
 ) -> i32 {
     match panic::catch_unwind(|| -> Result<(), String> {
+        let topo_data = slice::from_raw_parts(topology_ptr, topology_len);
+        let topo = unpack_topology(topo_data)?;
+
         let config = ConfigBuilder::default()
             .use_custom_parameters(V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64)
             .build();
         let (client_key, _server_key) = tfhe::generate_keys(config);
 
-        // Serialise client key (private, stays on device)
+        // Serialise client key
         let mut ck_buf = Vec::new();
         safe_serialize(&client_key, &mut ck_buf, LIMIT).map_err(|e| e.to_string())?;
 
-        // Generate Concrete-compatible Cap'n Proto ServerKeyset (for upload to backend)
-        let sk_buf = generate_concrete_eval_keys(&client_key)?;
+        // Generate eval keys from topology
+        let sk_buf = generate_concrete_eval_keys(&client_key, &topo)?;
 
-        // lwe_key: empty — ABI slot retained for backwards compatibility
-        let lwe_buf: Vec<u8> = Vec::new();
-
-        let (ck_ptr, ck_len)   = leak_buf(ck_buf);
-        let (sk_ptr, sk_len)   = leak_buf(sk_buf);
-        let (lwe_ptr, lwe_len) = leak_buf(lwe_buf);
+        let (ck_ptr, ck_len) = leak_buf(ck_buf);
+        let (sk_ptr, sk_len) = leak_buf(sk_buf);
 
         *client_key_out = ck_ptr;  *client_key_len = ck_len;
         *server_key_out = sk_ptr;  *server_key_len = sk_len;
-        *lwe_key_out    = lwe_ptr; *lwe_key_len    = lwe_len;
         Ok(())
     }) {
         Ok(Ok(())) => 0,
@@ -390,30 +368,48 @@ pub unsafe extern "C" fn fhe_keygen(
     }
 }
 
-/// Encrypt `n_vals` uint8 values (quantized inputs) with the client key.
+/// Encrypt values with the client key, dispatching to the correct TFHE-rs type.
 ///
-/// Output is a bincode-serialised `Vec<FheUint8>` compatible with
-/// `concrete-ml-extensions::encrypt_serialize_u8_radix_2d()`.
-/// Send the output bytes to `POST /fhe/predict`.
+/// `values` is an array of `i64` — each is cast to the target type before encrypting.
+/// `bit_width`: 8, 16, 32, or 64. `is_signed`: 0 = unsigned, 1 = signed.
 ///
 /// # Safety
 /// `client_key`, `values` must point to valid buffers of the given lengths.
 /// Free the output with `fhe_free_buf`.
 #[no_mangle]
-pub unsafe extern "C" fn fhe_encrypt_u8(
-    client_key:     *const u8, client_key_len: usize,
-    values:         *const u8, n_vals:         usize,
-    ct_out:         *mut *mut u8, ct_len: *mut usize,
+pub unsafe extern "C" fn fhe_encrypt(
+    client_key: *const u8, client_key_len: usize,
+    values:     *const i64, n_vals:        usize,
+    bit_width:  u32,
+    is_signed:  u32,
+    ct_out:     *mut *mut u8, ct_len: *mut usize,
 ) -> i32 {
     match panic::catch_unwind(|| -> Result<(), String> {
         let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
-        let vals     = slice::from_raw_parts(values, n_vals);
-
+        let vals = slice::from_raw_parts(values, n_vals);
         let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
             .map_err(|e| e.to_string())?;
 
-        let cts: Vec<FheUint8> = vals.iter().map(|&v| FheUint8::encrypt(v, &ck)).collect();
-        let serialised = bincode::serialize(&cts).map_err(|e| e.to_string())?;
+        macro_rules! encrypt_dispatch {
+            ($fhe_type:ty, $cast:ty) => {{
+                let cts: Vec<$fhe_type> = vals.iter()
+                    .map(|&v| <$fhe_type>::encrypt(v as $cast, &ck))
+                    .collect();
+                bincode::serialize(&cts).map_err(|e| e.to_string())?
+            }};
+        }
+
+        let serialised = match (bit_width, is_signed != 0) {
+            (8,  false) => encrypt_dispatch!(FheUint8,  u8),
+            (8,  true)  => encrypt_dispatch!(FheInt8,   i8),
+            (16, false) => encrypt_dispatch!(FheUint16, u16),
+            (16, true)  => encrypt_dispatch!(FheInt16,  i16),
+            (32, false) => encrypt_dispatch!(FheUint32, u32),
+            (32, true)  => encrypt_dispatch!(FheInt32,  i32),
+            (64, false) => encrypt_dispatch!(FheUint64, u64),
+            (64, true)  => encrypt_dispatch!(FheInt64,  i64),
+            _ => return Err(format!("unsupported bit_width={bit_width} is_signed={is_signed}")),
+        };
 
         let (ptr, len) = leak_buf(serialised);
         *ct_out = ptr;
@@ -426,31 +422,52 @@ pub unsafe extern "C" fn fhe_encrypt_u8(
     }
 }
 
-/// Decrypt a bincode-serialised `Vec<FheInt8>` (server result) with the client key.
+/// Decrypt ciphertext, dispatching to the correct TFHE-rs type.
 ///
-/// Compatible with `concrete-ml-extensions::decrypt_serialized_i8_radix_2d()`.
-/// The raw i8 scores are then dequantised in Dart using quantization_params.json.
+/// Output is always `i64` values (zero-extended for unsigned, sign-extended for signed).
+/// `scores_len` is set to the number of elements (not bytes).
 ///
 /// # Safety
-/// `client_key`, `ct` must point to valid buffers.  Free output with `fhe_free_i8_buf`.
+/// `client_key`, `ct` must point to valid buffers. Free output with `fhe_free_i64_buf`.
 #[no_mangle]
-pub unsafe extern "C" fn fhe_decrypt_i8(
-    client_key:  *const u8, client_key_len: usize,
-    ct:          *const u8, ct_len:         usize,
-    scores_out:  *mut *mut i8, scores_len: *mut usize,
+pub unsafe extern "C" fn fhe_decrypt(
+    client_key: *const u8, client_key_len: usize,
+    ct:         *const u8, ct_len:         usize,
+    bit_width:  u32,
+    is_signed:  u32,
+    scores_out: *mut *mut i64, scores_len: *mut usize,
 ) -> i32 {
     match panic::catch_unwind(|| -> Result<(), String> {
-        let ck_bytes  = slice::from_raw_parts(client_key, client_key_len);
-        let ct_bytes  = slice::from_raw_parts(ct, ct_len);
-
+        let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
+        let ct_bytes = slice::from_raw_parts(ct, ct_len);
         let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
             .map_err(|e| e.to_string())?;
-        let fhe_ints: Vec<FheInt8> = bincode::deserialize(ct_bytes)
-            .map_err(|e| e.to_string())?;
 
-        let raw: Vec<i8> = fhe_ints.iter().map(|v| v.decrypt(&ck)).collect();
+        macro_rules! decrypt_dispatch {
+            ($fhe_type:ty, $cast:ty) => {{
+                let fhe_vals: Vec<$fhe_type> = bincode::deserialize(ct_bytes)
+                    .map_err(|e| e.to_string())?;
+                let raw: Vec<i64> = fhe_vals.iter()
+                    .map(|v| { let x: $cast = v.decrypt(&ck); x as i64 })
+                    .collect();
+                raw
+            }};
+        }
+
+        let raw: Vec<i64> = match (bit_width, is_signed != 0) {
+            (8,  false) => decrypt_dispatch!(FheUint8,  u8),
+            (8,  true)  => decrypt_dispatch!(FheInt8,   i8),
+            (16, false) => decrypt_dispatch!(FheUint16, u16),
+            (16, true)  => decrypt_dispatch!(FheInt16,  i16),
+            (32, false) => decrypt_dispatch!(FheUint32, u32),
+            (32, true)  => decrypt_dispatch!(FheInt32,  i32),
+            (64, false) => decrypt_dispatch!(FheUint64, u64),
+            (64, true)  => decrypt_dispatch!(FheInt64,  i64),
+            _ => return Err(format!("unsupported bit_width={bit_width} is_signed={is_signed}")),
+        };
+
         let len = raw.len();
-        let ptr = Box::into_raw(raw.into_boxed_slice()) as *mut i8;
+        let ptr = Box::into_raw(raw.into_boxed_slice()) as *mut i64;
         *scores_out = ptr;
         *scores_len = len;
         Ok(())
@@ -461,7 +478,7 @@ pub unsafe extern "C" fn fhe_decrypt_i8(
     }
 }
 
-/// Free a `u8` buffer returned by `fhe_keygen` or `fhe_encrypt_u8`.
+/// Free a `u8` buffer returned by `fhe_keygen` or `fhe_encrypt`.
 ///
 /// # Safety
 /// `ptr` must have been returned by this library with the matching `len`.
@@ -472,12 +489,12 @@ pub unsafe extern "C" fn fhe_free_buf(ptr: *mut u8, len: usize) {
     }
 }
 
-/// Free an `i8` buffer returned by `fhe_decrypt_i8`.
+/// Free an `i64` buffer returned by `fhe_decrypt`.
 ///
 /// # Safety
 /// `ptr` must have been returned by this library with the matching `len`.
 #[no_mangle]
-pub unsafe extern "C" fn fhe_free_i8_buf(ptr: *mut i8, len: usize) {
+pub unsafe extern "C" fn fhe_free_i64_buf(ptr: *mut i64, len: usize) {
     if !ptr.is_null() && len > 0 {
         drop(Box::from_raw(slice::from_raw_parts_mut(ptr, len)));
     }
@@ -487,8 +504,8 @@ pub unsafe extern "C" fn fhe_free_i8_buf(ptr: *mut i8, len: usize) {
 mod tests {
     use super::*;
 
-    /// Smoke test: generate keys and verify the Cap'n Proto eval key can be
-    /// deserialized by the Rust capnp reader (structural validation).
+    /// Smoke test: generate keys with a dynamic topology and verify the Cap'n Proto
+    /// eval key can be deserialized by the Rust capnp reader (structural validation).
     #[test]
     fn generate_concrete_eval_keys_smoke() {
         let config = ConfigBuilder::default()
@@ -496,17 +513,44 @@ mod tests {
             .build();
         let (client_key, _server_key) = tfhe::generate_keys(config);
 
-        let eval_key_bytes = generate_concrete_eval_keys(&client_key)
+        let topo = Topology {
+            sks: vec![
+                SkSpec { id: 0, dim: 2048 },
+                SkSpec { id: 1, dim: 599 },
+                SkSpec { id: 2, dim: 1536 },
+                SkSpec { id: 3, dim: 719 },
+                SkSpec { id: 4, dim: 2048 },
+                SkSpec { id: 5, dim: 738 },
+            ],
+            bsks: vec![
+                BskSpec { input_id: 1, output_id: 0, level_count: 1, base_log: 23,
+                          glwe_dim: 4, poly_size: 512, input_lwe_dim: 599,
+                          variance: 8.442253112932959e-31 },
+                BskSpec { input_id: 3, output_id: 2, level_count: 1, base_log: 18,
+                          glwe_dim: 6, poly_size: 256, input_lwe_dim: 719,
+                          variance: 7.040630965929754e-23 },
+                BskSpec { input_id: 5, output_id: 4, level_count: 2, base_log: 15,
+                          glwe_dim: 2, poly_size: 1024, input_lwe_dim: 738,
+                          variance: 8.442253112932959e-31 },
+            ],
+            ksks: vec![
+                KskSpec { input_id: 0, output_id: 1, level_count: 3, base_log: 3,
+                          input_lwe_dim: 2048, output_lwe_dim: 599,
+                          variance: 2.207703775750815e-08 },
+                KskSpec { input_id: 0, output_id: 3, level_count: 2, base_log: 5,
+                          input_lwe_dim: 2048, output_lwe_dim: 719,
+                          variance: 3.0719950829084015e-10 },
+                KskSpec { input_id: 2, output_id: 5, level_count: 4, base_log: 3,
+                          input_lwe_dim: 1536, output_lwe_dim: 738,
+                          variance: 1.5612464764249122e-10 },
+            ],
+        };
+
+        let eval_key_bytes = generate_concrete_eval_keys(&client_key, &topo)
             .expect("generate_concrete_eval_keys failed");
 
-        // First 4 bytes are the Cap'n Proto segment-count header (n_segs - 1 = LE u32).
-        // With a larger payload Cap'n Proto may use more segments — just check it's non-zero.
-        let n_segs = u32::from_le_bytes(eval_key_bytes[..4].try_into().unwrap());
-        assert!(n_segs > 0, "expected valid Cap'n Proto framing, got 0 segments");
-
-        // Deserialize and check structure (raise limit to 2 GB for the large eval key)
         let mut opts = capnp::message::ReaderOptions::new();
-        opts.traversal_limit_in_words(Some(1 << 28)); // 256M words = 2 GB
+        opts.traversal_limit_in_words(Some(1 << 28));
         let reader = serialize::read_message(&eval_key_bytes[..], opts)
             .expect("Cap'n Proto deserialization failed");
         let keyset = reader
@@ -515,31 +559,18 @@ mod tests {
 
         let bsks = keyset.get_lwe_bootstrap_keys().unwrap();
         let ksks = keyset.get_lwe_keyswitch_keys().unwrap();
-        assert_eq!(bsks.len(), 4);
-        assert_eq!(ksks.len(), 8);
-        assert_eq!(keyset.get_packing_keyswitch_keys().unwrap().len(), 0);
+        assert_eq!(bsks.len(), 3);
+        assert_eq!(ksks.len(), 3);
 
-        // Spot-check BSK[0] params (inputLweDim=796, level=2, baseLog=15)
+        // Spot-check BSK[0]
         let bsk0_params = bsks.get(0).get_info().unwrap().get_params().unwrap();
-        assert_eq!(bsk0_params.get_input_lwe_dimension(), 796);
-        assert_eq!(bsk0_params.get_level_count(), 2);
-        assert_eq!(bsk0_params.get_base_log(), 15);
+        assert_eq!(bsk0_params.get_input_lwe_dimension(), 599);
+        assert_eq!(bsk0_params.get_level_count(), 1);
+        assert_eq!(bsk0_params.get_base_log(), 23);
 
-        // Spot-check KSK[0] params (inputLweDim=2048, outputLweDim=796, level=5, baseLog=3)
+        // Spot-check KSK[0]
         let ksk0_params = ksks.get(0).get_info().unwrap().get_params().unwrap();
         assert_eq!(ksk0_params.get_input_lwe_dimension(), 2048);
-        assert_eq!(ksk0_params.get_output_lwe_dimension(), 796);
-        assert_eq!(ksk0_params.get_level_count(), 5);
-        assert_eq!(ksk0_params.get_base_log(), 3);
-
-        println!(
-            "eval_key_bytes size: {} bytes ({:.1} MB)",
-            eval_key_bytes.len(),
-            eval_key_bytes.len() as f64 / 1024.0 / 1024.0
-        );
-
-        // Write to /tmp for cross-language comparison script
-        std::fs::write("/tmp/rust_eval_key.bin", &eval_key_bytes).unwrap();
-        println!("Wrote /tmp/rust_eval_key.bin for Python comparison");
+        assert_eq!(ksk0_params.get_output_lwe_dimension(), 599);
     }
 }

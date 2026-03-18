@@ -1,29 +1,52 @@
 // lib/src/client_zip_parser.dart
 //
 // Parses Concrete ML's client.zip to extract quantization parameters
-// from serialized_processing.json.
+// from serialized_processing.json, plus KeyTopology and CircuitEncoding
+// from client.specs.json.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 
+import 'circuit_encoding.dart';
+import 'key_topology.dart';
 import 'quantizer.dart';
 
-/// Parses a Concrete ML `client.zip` and extracts [QuantizationParams].
+/// Result of parsing a Concrete ML `client.zip`.
+class ParseResult {
+  /// Quantization parameters extracted from `serialized_processing.json`.
+  final QuantizationParams quantParams;
+
+  /// Key topology extracted from `client.specs.json`.
+  final KeyTopology topology;
+
+  /// Circuit I/O encoding extracted from `client.specs.json`.
+  final CircuitEncoding encoding;
+
+  const ParseResult({
+    required this.quantParams,
+    required this.topology,
+    required this.encoding,
+  });
+}
+
+/// Parses a Concrete ML `client.zip` and extracts [ParseResult].
 ///
-/// The zip must contain `serialized_processing.json` with `input_quantizers`
-/// and `output_quantizers` arrays in Concrete ML's UniformQuantizer format.
+/// The zip must contain:
+/// - `serialized_processing.json` with `input_quantizers` and
+///   `output_quantizers` arrays in Concrete ML's UniformQuantizer format.
+/// - `client.specs.json` with `keyset` and `circuits` sections.
 class ClientZipParser {
   ClientZipParser._();
 
-  /// Parse [zipBytes] and return [QuantizationParams].
+  /// Parse [zipBytes] and return [ParseResult].
   ///
-  /// Throws [FormatException] if the zip structure is invalid or
-  /// quantization bit width is not 8.
-  static QuantizationParams parse(Uint8List zipBytes) {
+  /// Throws [FormatException] if the zip structure is invalid.
+  static ParseResult parse(Uint8List zipBytes) {
     final archive = ZipDecoder().decodeBytes(zipBytes);
 
+    // --- Parse serialized_processing.json ---
     final procFile = archive.findFile('serialized_processing.json');
     if (procFile == null) {
       throw const FormatException(
@@ -46,7 +69,6 @@ class ClientZipParser {
     for (final q in inputQuantizers) {
       final sv = (q as Map<String, dynamic>)['serialized_value']
           as Map<String, dynamic>;
-      _validateNBits(sv, signed: false);
       input.add(InputQuantParam(
         scale: _extractFloat(sv['scale']),
         zeroPoint: _extractInt(sv['zero_point']),
@@ -56,38 +78,165 @@ class ClientZipParser {
     // Parse output quantizer (first one)
     final outSv = (outputQuantizers[0] as Map<String, dynamic>)
         ['serialized_value'] as Map<String, dynamic>;
-    _validateNBits(outSv, signed: true);
     final output = OutputQuantParam(
       scale: _extractFloat(outSv['scale']),
       zeroPoint: _extractInt(outSv['zero_point']),
       offset: outSv.containsKey('offset') ? _extractInt(outSv['offset']) : 0,
     );
 
-    // Parse nClasses from client.specs.json (tfhers output shape).
-    int? nClasses;
+    // --- Parse client.specs.json (required) ---
     final specsFile = archive.findFile('client.specs.json');
-    if (specsFile != null) {
-      final specs = jsonDecode(utf8.decode(specsFile.content as List<int>))
-          as Map<String, dynamic>;
-      final tfhersSpecs = specs['tfhers_specs'] as Map<String, dynamic>?;
-      if (tfhersSpecs != null) {
-        final outputShapes =
-            tfhersSpecs['output_shapes_per_func'] as Map<String, dynamic>?;
-        if (outputShapes != null && outputShapes.isNotEmpty) {
-          // First function's first output shape, e.g. [1, 5, 200].
-          final shapes = outputShapes.values.first as List<dynamic>;
-          if (shapes.isNotEmpty) {
-            final shape = shapes[0] as List<dynamic>;
-            // Shape is [batch, nClasses, nTrees] — extract nClasses.
-            if (shape.length >= 2) {
-              nClasses = (shape[1] as num).toInt();
-            }
+    if (specsFile == null) {
+      throw const FormatException('client.zip missing client.specs.json');
+    }
+
+    final specs = jsonDecode(utf8.decode(specsFile.content as List<int>))
+        as Map<String, dynamic>;
+
+    // Parse nClasses from tfhers_specs output shape.
+    int? nClasses;
+    final tfhersSpecs = specs['tfhers_specs'] as Map<String, dynamic>?;
+    if (tfhersSpecs != null) {
+      final outputShapes =
+          tfhersSpecs['output_shapes_per_func'] as Map<String, dynamic>?;
+      if (outputShapes != null && outputShapes.isNotEmpty) {
+        // First function's first output shape, e.g. [1, 5, 200].
+        final shapes = outputShapes.values.first as List<dynamic>;
+        if (shapes.isNotEmpty) {
+          final shape = shapes[0] as List<dynamic>;
+          // Shape is [batch, nClasses, nTrees] — extract nClasses.
+          if (shape.length >= 2) {
+            nClasses = (shape[1] as num).toInt();
           }
         }
       }
     }
 
-    return QuantizationParams(input: input, output: output, nClasses: nClasses);
+    final quantParams =
+        QuantizationParams(input: input, output: output, nClasses: nClasses);
+
+    // --- Parse KeyTopology from keyset ---
+    final keyset = specs['keyset'] as Map<String, dynamic>;
+
+    // Build SK lookup map: id -> lweDimension
+    final skList = keyset['lweSecretKeys'] as List<dynamic>;
+    final skById = <int, int>{};
+    final secretKeys = <SecretKeySpec>[];
+    for (final sk in skList) {
+      final skMap = sk as Map<String, dynamic>;
+      final id = (skMap['id'] as num).toInt();
+      final lweDim =
+          ((skMap['params'] as Map<String, dynamic>)['lweDimension'] as num)
+              .toInt();
+      skById[id] = lweDim;
+      secretKeys.add(SecretKeySpec(id: id, lweDimension: lweDim));
+    }
+
+    // Parse BSKs with cross-referenced inputLweDimension from SK map
+    final bskList = keyset['lweBootstrapKeys'] as List<dynamic>;
+    final bootstrapKeys = <BootstrapKeySpec>[];
+    for (final bsk in bskList) {
+      final bskMap = bsk as Map<String, dynamic>;
+      final params = bskMap['params'] as Map<String, dynamic>;
+      final inputId = (bskMap['inputId'] as num).toInt();
+      final outputId = (bskMap['outputId'] as num).toInt();
+      final inputLweDim = params.containsKey('inputLweDimension')
+          ? (params['inputLweDimension'] as num).toInt()
+          : (skById[inputId] ?? 0);
+      bootstrapKeys.add(BootstrapKeySpec(
+        inputId: inputId,
+        outputId: outputId,
+        levelCount: (params['levelCount'] as num).toInt(),
+        baseLog: (params['baseLog'] as num).toInt(),
+        glweDimension: (params['glweDimension'] as num).toInt(),
+        polynomialSize: (params['polynomialSize'] as num).toInt(),
+        inputLweDimension: inputLweDim,
+        variance: (params['variance'] as num).toDouble(),
+      ));
+    }
+
+    // Parse KSKs with cross-referenced input/outputLweDimension from SK map
+    final kskList = keyset['lweKeyswitchKeys'] as List<dynamic>;
+    final keyswitchKeys = <KeyswitchKeySpec>[];
+    for (final ksk in kskList) {
+      final kskMap = ksk as Map<String, dynamic>;
+      final params = kskMap['params'] as Map<String, dynamic>;
+      final inputId = (kskMap['inputId'] as num).toInt();
+      final outputId = (kskMap['outputId'] as num).toInt();
+      final inputLweDim = params.containsKey('inputLweDimension')
+          ? (params['inputLweDimension'] as num).toInt()
+          : (skById[inputId] ?? 0);
+      final outputLweDim = params.containsKey('outputLweDimension')
+          ? (params['outputLweDimension'] as num).toInt()
+          : (skById[outputId] ?? 0);
+      keyswitchKeys.add(KeyswitchKeySpec(
+        inputId: inputId,
+        outputId: outputId,
+        levelCount: (params['levelCount'] as num).toInt(),
+        baseLog: (params['baseLog'] as num).toInt(),
+        inputLweDimension: inputLweDim,
+        outputLweDimension: outputLweDim,
+        variance: (params['variance'] as num).toDouble(),
+      ));
+    }
+
+    final topology = KeyTopology(
+      secretKeys: secretKeys,
+      bootstrapKeys: bootstrapKeys,
+      keyswitchKeys: keyswitchKeys,
+    );
+
+    // --- Parse CircuitEncoding from circuits[0] ---
+    final circuits = specs['circuits'] as List<dynamic>;
+    if (circuits.isEmpty) {
+      throw const FormatException('client.specs.json has no circuits');
+    }
+    final circuit = circuits[0] as Map<String, dynamic>;
+
+    final circuitInputs = circuit['inputs'] as List<dynamic>;
+    final circuitOutputs = circuit['outputs'] as List<dynamic>;
+
+    if (circuitInputs.isEmpty) {
+      throw const FormatException(
+          'client.specs.json circuit has no inputs');
+    }
+    if (circuitOutputs.isEmpty) {
+      throw const FormatException(
+          'client.specs.json circuit has no outputs');
+    }
+
+    final inEncoding = _parseIntegerEncoding(
+        (circuitInputs[0] as Map<String, dynamic>)['typeInfo']
+            as Map<String, dynamic>);
+    final outEncoding = _parseIntegerEncoding(
+        (circuitOutputs[0] as Map<String, dynamic>)['typeInfo']
+            as Map<String, dynamic>);
+
+    final encoding = CircuitEncoding(
+      inputWidth: inEncoding.$1,
+      inputIsSigned: inEncoding.$2,
+      outputWidth: outEncoding.$1,
+      outputIsSigned: outEncoding.$2,
+    );
+
+    return ParseResult(
+      quantParams: quantParams,
+      topology: topology,
+      encoding: encoding,
+    );
+  }
+
+  /// Extract integer encoding (width, isSigned) from a typeInfo map.
+  ///
+  /// Expects: `{"lweCiphertext": {"encoding": {"integer": {"width": N, "isSigned": B}}}}`
+  static (int, bool) _parseIntegerEncoding(Map<String, dynamic> typeInfo) {
+    final lweCiphertext = typeInfo['lweCiphertext'] as Map<String, dynamic>;
+    final encodingWrapper =
+        lweCiphertext['encoding'] as Map<String, dynamic>;
+    final integer = encodingWrapper['integer'] as Map<String, dynamic>;
+    final width = (integer['width'] as num).toInt();
+    final isSigned = integer['isSigned'] as bool;
+    return (width, isSigned);
   }
 
   /// Extract a float value that may be raw or wrapped in
@@ -108,23 +257,5 @@ class ClientZipParser {
       return (value['serialized_value'] as num).toInt();
     }
     throw FormatException('Cannot parse int from: $value');
-  }
-
-  /// Validate that n_bits == 8 and is_signed matches expectations.
-  static void _validateNBits(Map<String, dynamic> sv, {required bool signed}) {
-    final nBits = sv['n_bits'] as int;
-    if (nBits != 8) {
-      throw FormatException(
-        'Unsupported n_bits=$nBits (expected 8). '
-        'flutter_concrete only supports 8-bit quantization.',
-      );
-    }
-    final isSigned = sv['is_signed'] as bool;
-    if (isSigned != signed) {
-      throw FormatException(
-        'Unexpected is_signed=$isSigned for ${signed ? "output" : "input"} '
-        'quantizer (expected $signed).',
-      );
-    }
   }
 }

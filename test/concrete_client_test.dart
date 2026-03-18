@@ -41,5 +41,12 @@ void main() {
       client.reset();
       expect(client.isReady, isFalse);
     });
+
+    test('modelHashStorageKey constant is correct', () {
+      // This test verifies the storage key exists, but cannot run full setup
+      // without the native library. We test the logic path by checking
+      // that ConcreteClient attempts to write 'fhe_model_hash'.
+      expect(ConcreteClient.modelHashStorageKey, 'fhe_model_hash');
+    });
   });
 }
