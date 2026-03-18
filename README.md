@@ -115,9 +115,9 @@ final scores = client.decryptAndDequantize(encryptedResult);
 
 ## Known limitations
 
-1. ~~**Hardcoded eval key topology**~~ — Key topology is now parsed dynamically from `client.specs.json`, supporting any Concrete ML circuit configuration.
+1. ~~**Hardcoded eval key topology**~~ — Key topology is now parsed dynamically from `client.specs.json`, allowing support for any Concrete ML circuit configuration.
 
-2. ~~**uint8 input / int8 output only**~~ — The plugin now supports encoding widths up to 64-bit, automatically selected from `client.specs.json`.
+2. ~~**uint8 input / int8 output only**~~ — The plugin now supports multi-width encoding (FheUint8–FheUint64, FheInt8–FheInt64), automatically selected from `client.specs.json`.
 
 3. **Single input/output tensor** — assumes one input and one output tensor per circuit.
 
