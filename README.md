@@ -35,17 +35,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_concrete:
-    git:
-      url: https://github.com/afonsomota/flutter_concrete.git
-```
-
-Or as a local path dependency:
-
-```yaml
-dependencies:
-  flutter_concrete:
-    path: ../flutter_concrete
+  flutter_concrete: ^0.1.0
 ```
 
 ### Prerequisites
@@ -130,8 +120,8 @@ final scores = client.decryptAndDequantize(encryptedResult);
 
 3. **Single input/output tensor** — assumes one input and one output tensor per circuit.
 
-4. **No precompiled binaries** — requires Rust toolchain on the build machine.
+4. ~~**No precompiled binaries**~~ — Precompiled binaries are now built and signed automatically via GitHub Actions. Developers without a Rust toolchain will download them during `flutter build`.
 
 ## License
 
-MIT
+BSD-3-Clause
