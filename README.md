@@ -111,12 +111,13 @@ final scores = client.decryptAndDequantize(encryptedResult);
 - **Parameter set**: `V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64`
 - **Serialization**: bincode (ciphertexts), Cap'n Proto (evaluation keys)
 - **Platforms**: iOS, Android
+- **Encoding widths**: FheUint8–FheUint64, FheInt8–FheInt64 (selected automatically from `client.specs.json`)
 
 ## Known limitations
 
-1. **Hardcoded eval key topology** — key generation produces 4 BSKs and 8 KSKs matching a specific Concrete ML circuit. Future: parse `client.specs.json` for dynamic key topology.
+1. ~~**Hardcoded eval key topology**~~ — Key topology is now parsed dynamically from `client.specs.json`, supporting any Concrete ML circuit configuration.
 
-2. **uint8 input / int8 output only** — matches 8-bit quantization. Other bit widths are not yet supported.
+2. ~~**uint8 input / int8 output only**~~ — The plugin now supports encoding widths up to 64-bit, automatically selected from `client.specs.json`.
 
 3. **Single input/output tensor** — assumes one input and one output tensor per circuit.
 
