@@ -9,7 +9,14 @@ import 'dart:typed_data';
 class InputQuantParam {
   final double scale;
   final int zeroPoint;
-  const InputQuantParam({required this.scale, required this.zeroPoint});
+  final int nBits;
+  final bool isSigned;
+  const InputQuantParam({
+    required this.scale,
+    required this.zeroPoint,
+    this.nBits = 8,
+    this.isSigned = false,
+  });
 }
 
 /// Output dequantization parameters (shared across all output classes).
@@ -17,10 +24,14 @@ class OutputQuantParam {
   final double scale;
   final int zeroPoint;
   final int offset;
+  final int nBits;
+  final bool isSigned;
   const OutputQuantParam({
     required this.scale,
     required this.zeroPoint,
     required this.offset,
+    this.nBits = 8,
+    this.isSigned = true,
   });
 }
 
@@ -40,24 +51,34 @@ class QuantizationParams {
     this.nClasses,
   });
 
-  /// Quantize float feature vector to uint8 using per-feature input params.
+  /// Quantize float feature vector to Int64List using per-feature input params.
   ///
-  /// Formula: q = round(float / scale) + zero_point, clamped to [0, 255].
-  Uint8List quantizeInputs(Float32List features) {
+  /// Formula: q = round(float / scale) + zero_point, clamped to the range
+  /// determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
+  /// - Unsigned: [0, (1 << nBits) - 1]
+  /// - Signed: [-(1 << (nBits - 1)), (1 << (nBits - 1)) - 1]
+  Int64List quantizeInputs(Float32List features) {
     assert(
       features.length == input.length,
       'Feature length ${features.length} != quant param length ${input.length}',
     );
-    final result = Uint8List(features.length);
+    final result = Int64List(features.length);
     for (int i = 0; i < features.length; i++) {
       final p = input[i];
       final q = (features[i] / p.scale).round() + p.zeroPoint;
-      result[i] = q.clamp(0, 255);
+      if (p.isSigned) {
+        final minVal = -(1 << (p.nBits - 1));
+        final maxVal = (1 << (p.nBits - 1)) - 1;
+        result[i] = q.clamp(minVal, maxVal);
+      } else {
+        final maxVal = (1 << p.nBits) - 1;
+        result[i] = q.clamp(0, maxVal);
+      }
     }
     return result;
   }
 
-  /// Dequantize raw int8 output scores to float64.
+  /// Dequantize raw int64 output scores to float64.
   ///
   /// For tree-ensemble models (XGBoost), the FHE circuit outputs one value
   /// per class per tree. When [nClasses] is set and `rawScores.length` is a
@@ -66,7 +87,7 @@ class QuantizationParams {
   /// class.
   ///
   /// Formula per element: float = (raw + offset - zero_point) * scale.
-  Float64List dequantizeOutputs(Int8List rawScores) {
+  Float64List dequantizeOutputs(Int64List rawScores) {
     final p = output;
 
     // Aggregate per-tree outputs when nClasses is known.

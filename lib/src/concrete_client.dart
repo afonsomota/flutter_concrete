@@ -61,7 +61,8 @@ class ConcreteClient {
     if (_isReady) return;
 
     // 1. Parse quantization params from client.zip
-    _quantParams = ClientZipParser.parse(clientZipBytes);
+    final result = ClientZipParser.parse(clientZipBytes);
+    _quantParams = result.quantParams;
 
     // 2. Try to restore persisted keys
     final storedClient = await storage.read(_kClientKeyStorageKey);
@@ -105,7 +106,10 @@ class ConcreteClient {
   Uint8List quantizeAndEncrypt(Float32List features) {
     _requireReady();
     final quantized = _quantParams!.quantizeInputs(features);
-    return _native.encryptU8(_clientKey!, quantized);
+    // encryptU8 expects Uint8List; quantizeInputs returns Int64List.
+    // Values are clamped to [0, 255] by the quantizer, so cast is safe.
+    final asUint8 = Uint8List.fromList(quantized.map((v) => v & 0xFF).toList());
+    return _native.encryptU8(_clientKey!, asUint8);
   }
 
   /// FHE-decrypt ciphertext and dequantize to float scores.
@@ -113,7 +117,9 @@ class ConcreteClient {
   /// Returns dequantized float64 scores (one per output class).
   Float64List decryptAndDequantize(Uint8List ciphertext) {
     _requireReady();
-    final rawScores = _native.decryptI8(_clientKey!, ciphertext);
+    final rawI8 = _native.decryptI8(_clientKey!, ciphertext);
+    // dequantizeOutputs accepts Int64List; promote Int8List values.
+    final rawScores = Int64List.fromList(rawI8);
     return _quantParams!.dequantizeOutputs(rawScores);
   }
 
