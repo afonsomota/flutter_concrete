@@ -1,6 +1,8 @@
 name: flutter_concrete
-description: Concrete ML FHE client for Flutter (TFHE-rs via Cargokit)
-version: 0.0.1
+description: Concrete ML FHE client for Flutter. Native TFHE-rs encryption/decryption via Dart FFI with quantization support.
+version: 0.1.0
+homepage: https://github.com/afonsomota/flutter_concrete
+repository: https://github.com/afonsomota/flutter_concrete
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
