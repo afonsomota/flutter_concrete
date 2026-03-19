@@ -160,3 +160,62 @@ struct Keyset {
   server @0 :ServerKeyset;
   client @1 :ClientKeyset;
 }
+
+# ── Ciphertext transport types ──────────────────────────────────────────────
+
+struct Value {
+  payload @0 :Payload;
+  rawInfo @1 :RawInfo;
+  typeInfo @2 :TypeInfo;
+}
+
+struct TypeInfo {
+  union {
+    lweCiphertext @0 :LweCiphertextTypeInfo;
+    plaintext @1 :PlaintextTypeInfo;
+    index @2 :IndexTypeInfo;
+  }
+}
+
+struct PlaintextTypeInfo {}
+struct IndexTypeInfo {}
+
+struct LweCiphertextTypeInfo {
+  abstractShape @0 :Shape;
+  concreteShape @1 :Shape;
+  integerPrecision @2 :UInt32;
+  encryption @3 :LweCiphertextEncryptionInfo;
+  compression @4 :Compression;
+  encoding :union {
+    integer @5 :IntegerCiphertextEncodingInfo;
+    boolean @6 :BooleanCiphertextEncodingInfo;
+  }
+}
+
+struct LweCiphertextEncryptionInfo {
+  keyId @0 :UInt32;
+  variance @1 :Float64;
+  lweDimension @2 :UInt32;
+  modulus @3 :Modulus;
+}
+
+struct IntegerCiphertextEncodingInfo {
+  width @0 :UInt32;
+  isSigned @1 :Bool;
+  mode :union {
+    native @2 :NativeMode;
+    chunked @3 :ChunkedMode;
+    crt @4 :CrtMode;
+  }
+}
+
+struct NativeMode {}
+struct ChunkedMode {
+  size @0 :UInt32;
+  width @1 :UInt32;
+}
+struct CrtMode {
+  moduli @0 :List(UInt32);
+}
+
+struct BooleanCiphertextEncodingInfo {}

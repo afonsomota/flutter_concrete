@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 
 import 'circuit_encoding.dart';
+import 'concrete_cipher_info.dart';
 import 'key_topology.dart';
 import 'quantizer.dart';
 
@@ -24,10 +25,18 @@ class ParseResult {
   /// Circuit I/O encoding extracted from `client.specs.json`.
   final CircuitEncoding encoding;
 
+  /// Concrete LWE cipher info for input (null if TFHE-rs format).
+  final ConcreteCipherInfo? inputCipherInfo;
+
+  /// Concrete LWE cipher info for output (null if TFHE-rs format).
+  final ConcreteCipherInfo? outputCipherInfo;
+
   const ParseResult({
     required this.quantParams,
     required this.topology,
     required this.encoding,
+    this.inputCipherInfo,
+    this.outputCipherInfo,
   });
 }
 
@@ -102,7 +111,7 @@ class ClientZipParser {
       if (outputShapes != null && outputShapes.isNotEmpty) {
         // First function's first output shape, e.g. [1, 5, 200].
         final shapes = outputShapes.values.first as List<dynamic>;
-        if (shapes.isNotEmpty) {
+        if (shapes.isNotEmpty && shapes[0] is List) {
           final shape = shapes[0] as List<dynamic>;
           // Shape is [batch, nClasses, nTrees] — extract nClasses.
           if (shape.length >= 2) {
@@ -205,12 +214,15 @@ class ClientZipParser {
           'client.specs.json circuit has no outputs');
     }
 
-    final inEncoding = _parseIntegerEncoding(
+    final inputTypeInfo =
         (circuitInputs[0] as Map<String, dynamic>)['typeInfo']
-            as Map<String, dynamic>);
-    final outEncoding = _parseIntegerEncoding(
+            as Map<String, dynamic>;
+    final outputTypeInfo =
         (circuitOutputs[0] as Map<String, dynamic>)['typeInfo']
-            as Map<String, dynamic>);
+            as Map<String, dynamic>;
+
+    final inEncoding = _parseIntegerEncoding(inputTypeInfo);
+    final outEncoding = _parseIntegerEncoding(outputTypeInfo);
 
     final encoding = CircuitEncoding(
       inputWidth: inEncoding.$1,
@@ -219,10 +231,66 @@ class ClientZipParser {
       outputIsSigned: outEncoding.$2,
     );
 
+    // Parse ConcreteCipherInfo (null for TFHE-rs format specs)
+    final inputCipherInfo = _parseCipherInfo(inputTypeInfo);
+    final outputCipherInfo = _parseCipherInfo(outputTypeInfo);
+
     return ParseResult(
       quantParams: quantParams,
       topology: topology,
       encoding: encoding,
+      inputCipherInfo: inputCipherInfo,
+      outputCipherInfo: outputCipherInfo,
+    );
+  }
+
+  /// Parse [ConcreteCipherInfo] from a circuit gate's typeInfo.
+  ///
+  /// Returns null if the `encryption` field is missing, indicating TFHE-rs
+  /// format where these fields aren't populated.
+  static ConcreteCipherInfo? _parseCipherInfo(Map<String, dynamic> typeInfo) {
+    final lweCtInfo = typeInfo['lweCiphertext'] as Map<String, dynamic>?;
+    if (lweCtInfo == null) return null;
+
+    final encryption = lweCtInfo['encryption'] as Map<String, dynamic>?;
+    if (encryption == null) return null;
+
+    final compressionStr = lweCtInfo['compression'] as String? ?? 'none';
+    final compression = compressionStr == 'seed'
+        ? ConcreteCipherCompression.seed
+        : ConcreteCipherCompression.none;
+
+    final encodingWrapper = lweCtInfo['encoding'] as Map<String, dynamic>?;
+    final integer = encodingWrapper?['integer'] as Map<String, dynamic>?;
+    if (integer == null) return null;
+
+    final mode = integer['mode'] as Map<String, dynamic>?;
+    final isNative = mode != null && mode.containsKey('native');
+
+    final concreteShapeMap =
+        lweCtInfo['concreteShape'] as Map<String, dynamic>?;
+    final concreteShape = (concreteShapeMap?['dimensions'] as List<dynamic>?)
+            ?.map((d) => (d as num).toInt())
+            .toList() ??
+        [];
+
+    final abstractShapeMap =
+        lweCtInfo['abstractShape'] as Map<String, dynamic>?;
+    final abstractShape = (abstractShapeMap?['dimensions'] as List<dynamic>?)
+            ?.map((d) => (d as num).toInt())
+            .toList() ??
+        [];
+
+    return ConcreteCipherInfo(
+      lweDimension: (encryption['lweDimension'] as num).toInt(),
+      keyId: (encryption['keyId'] as num).toInt(),
+      variance: (encryption['variance'] as num).toDouble(),
+      compression: compression,
+      encodingWidth: (integer['width'] as num).toInt(),
+      encodingIsSigned: integer['isSigned'] as bool,
+      isNativeMode: isNative,
+      concreteShape: concreteShape,
+      abstractShape: abstractShape,
     );
   }
 
