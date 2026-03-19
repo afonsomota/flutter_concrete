@@ -235,8 +235,25 @@ class ClientZipParser {
     final inputCipherInfo = _parseCipherInfo(inputTypeInfo);
     final outputCipherInfo = _parseCipherInfo(outputTypeInfo);
 
+    // Derive nClasses from output abstractShape if not set from tfhers_specs.
+    // Output abstractShape is [batch, nClasses, nTrees] for tree-ensemble models.
+    if (nClasses == null && outputCipherInfo != null) {
+      final absShape = outputCipherInfo.abstractShape;
+      if (absShape.length >= 2) {
+        nClasses = absShape[1];
+      }
+    }
+
+    final quantParamsWithClasses = nClasses != null && nClasses != quantParams.nClasses
+        ? QuantizationParams(
+            input: quantParams.input,
+            output: quantParams.output,
+            nClasses: nClasses,
+          )
+        : quantParams;
+
     return ParseResult(
-      quantParams: quantParams,
+      quantParams: quantParamsWithClasses,
       topology: topology,
       encoding: encoding,
       inputCipherInfo: inputCipherInfo,
