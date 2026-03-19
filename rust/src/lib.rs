@@ -336,8 +336,31 @@ pub unsafe extern "C" fn fhe_keygen(
         let topo_data = slice::from_raw_parts(topology_ptr, topology_len);
         let topo = unpack_topology(topo_data)?;
 
+        // Derive GLWE parameters from the topology's BSK that outputs SK[0].
+        // SK[0] is the root key — its GLWE dimensions must match what the
+        // Concrete compiler chose, which varies by n_bits and ciphertext format.
+        let sk0_id = topo.sks[0].id;
+        let (glwe_dim, poly_size) = topo.bsks.iter()
+            .find(|bsk| bsk.output_id == sk0_id)
+            .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
+            .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
+
+        // Find the KSK from SK[0] to determine the small LWE dimension
+        let small_lwe_dim = topo.ksks.iter()
+            .find(|ksk| ksk.input_id == sk0_id)
+            .map(|ksk| ksk.output_lwe_dim as usize)
+            .unwrap_or(topo.sks.get(1).map(|s| s.dim as usize).unwrap_or(834));
+
+        // Build parameters matching the topology. Start from V0_10 as a
+        // template (for noise distributions, message/carry modulus, etc.)
+        // and override the GLWE/LWE dimensions to match the compiler's choice.
+        let mut params = V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64;
+        params.glwe_dimension = GlweDimension(glwe_dim);
+        params.polynomial_size = PolynomialSize(poly_size);
+        params.lwe_dimension = LweDimension(small_lwe_dim);
+
         let config = ConfigBuilder::default()
-            .use_custom_parameters(V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64)
+            .use_custom_parameters(params)
             .build();
         let (client_key, _server_key) = tfhe::generate_keys(config);
 
@@ -699,16 +722,27 @@ pub unsafe extern "C" fn fhe_serialize_value(
         let shape_vals = slice::from_raw_parts(shape, shape_len);
         let abstract_shape_vals = slice::from_raw_parts(abstract_shape, abstract_shape_len);
 
+        // For seeded compression, the input is seed (16 bytes) + body.
+        // Concrete's Value payload stores only the body bytes (no seed).
+        let payload_bytes = if compression == 1 {
+            if ct_len < 16 {
+                return Err("seeded ciphertext too short (< 16 bytes)".into());
+            }
+            &ct_bytes[16..]
+        } else {
+            ct_bytes
+        };
+
         let mut message = Builder::new_default();
         {
             use concrete_protocol_capnp::value;
             let mut val = message.init_root::<value::Builder<'_>>();
 
-            // Payload: single Data entry
+            // Payload: single Data entry (body only, seed stripped for seeded compression)
             {
                 let mut payload = val.reborrow().init_payload();
                 let mut data_list = payload.reborrow().init_data(1);
-                data_list.set(0, ct_bytes);
+                data_list.set(0, payload_bytes);
             }
 
             // RawInfo: isSigned is always false (raw u64 container)
@@ -1052,8 +1086,14 @@ mod tests {
     }
 
     #[test]
-    fn value_serialize_deserialize_round_trip() {
-        let payload = vec![0u8; 136]; // fake seeded data
+    fn value_serialize_deserialize_round_trip_seeded() {
+        // Simulate seeded ciphertext: 16-byte seed prefix + 120-byte body
+        let seed = vec![0xAAu8; 16];
+        let body = vec![0xBBu8; 120]; // 5 * 3 * 8 = 120 bytes
+        let mut input = seed.clone();
+        input.extend_from_slice(&body);
+        assert_eq!(input.len(), 136);
+
         let shape: Vec<u32> = vec![1, 5, 3];
         let abstract_shape: Vec<u32> = vec![1, 5];
 
@@ -1062,7 +1102,7 @@ mod tests {
 
         let rc = unsafe {
             fhe_serialize_value(
-                payload.as_ptr(), payload.len(),
+                input.as_ptr(), input.len(),
                 shape.as_ptr(), shape.len(),
                 abstract_shape.as_ptr(), abstract_shape.len(),
                 3, 0, // width=3, unsigned
@@ -1077,7 +1117,7 @@ mod tests {
         let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
         unsafe { fhe_free_buf(out_ptr, out_len) };
 
-        // Deserialize
+        // Deserialize — should get body only (no seed prefix)
         let mut ct_ptr: *mut u8 = std::ptr::null_mut();
         let mut ct_len: usize = 0;
         let mut n_cts: u32 = 0;
@@ -1089,12 +1129,106 @@ mod tests {
             )
         };
         assert_eq!(rc, 0);
-        assert_eq!(ct_len, 136);
+        assert_eq!(ct_len, 120); // body only, seed stripped
         assert_eq!(n_cts, 5); // product of shape[0..2] = 1*5
 
         let recovered = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
         unsafe { fhe_free_buf(ct_ptr, ct_len) };
 
+        assert_eq!(body, recovered);
+    }
+
+    #[test]
+    fn value_serialize_no_seed_stripping_when_uncompressed() {
+        let payload = vec![0xCCu8; 120];
+        let shape: Vec<u32> = vec![1, 5, 3];
+        let abstract_shape: Vec<u32> = vec![1, 5];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_serialize_value(
+                payload.as_ptr(), payload.len(),
+                shape.as_ptr(), shape.len(),
+                abstract_shape.as_ptr(), abstract_shape.len(),
+                3, 0,
+                2048, 0, 8.442253112932959e-31,
+                0, // compression=none — no stripping
+                &mut out_ptr, &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { fhe_free_buf(out_ptr, out_len) };
+
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let mut n_cts: u32 = 0;
+
+        let rc = unsafe {
+            fhe_deserialize_value(
+                serialized.as_ptr(), serialized.len(),
+                &mut ct_ptr, &mut ct_len, &mut n_cts,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(ct_len, 120); // full payload preserved
+        assert_eq!(n_cts, 5);
+
+        let recovered = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+
         assert_eq!(payload, recovered);
+    }
+
+    #[test]
+    fn value_serialize_real_model_payload_size() {
+        // Real model: shape [1,50,3], seeded → 16-byte seed + 150*8 body
+        let seed = vec![0x42u8; 16];
+        let body = vec![0u8; 150 * 8]; // 1200 bytes
+        let mut input = seed;
+        input.extend_from_slice(&body);
+        assert_eq!(input.len(), 1216); // seed + body
+
+        let shape: Vec<u32> = vec![1, 50, 3];
+        let abstract_shape: Vec<u32> = vec![1, 50];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_serialize_value(
+                input.as_ptr(), input.len(),
+                shape.as_ptr(), shape.len(),
+                abstract_shape.as_ptr(), abstract_shape.len(),
+                3, 0,
+                2048, 0, 8.442253112932959e-31,
+                1, // compression=seed
+                &mut out_ptr, &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { fhe_free_buf(out_ptr, out_len) };
+
+        // Deserialize and verify body-only payload
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let mut n_cts: u32 = 0;
+
+        let rc = unsafe {
+            fhe_deserialize_value(
+                serialized.as_ptr(), serialized.len(),
+                &mut ct_ptr, &mut ct_len, &mut n_cts,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(ct_len, 1200); // body only, matches Python reference
+        assert_eq!(n_cts, 50); // product of shape[0..n-1] = 1*50
+
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
     }
 }
