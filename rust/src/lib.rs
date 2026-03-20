@@ -22,19 +22,12 @@ use std::slice;
 use capnp::message::Builder;
 use capnp::serialize;
 
-use tfhe::core_crypto::algorithms::{
-    allocate_and_generate_new_binary_glwe_secret_key,
-    allocate_and_generate_new_binary_lwe_secret_key,
-    generate_seeded_lwe_bootstrap_key, generate_seeded_lwe_keyswitch_key,
-};
+use tfhe::core_crypto::algorithms::*;
 use tfhe::core_crypto::commons::generators::SecretRandomGenerator;
 use tfhe::core_crypto::commons::dispersion::StandardDev;
 use tfhe::core_crypto::commons::math::random::{DefaultRandomGenerator, Gaussian};
-use tfhe::core_crypto::commons::parameters::{
-    CiphertextModulus, DecompositionBaseLog, DecompositionLevelCount, GlweDimension, GlweSize,
-    LweDimension, PolynomialSize,
-};
-use tfhe::core_crypto::entities::{SeededLweBootstrapKey, SeededLweKeyswitchKey};
+use tfhe::core_crypto::commons::parameters::*;
+use tfhe::core_crypto::entities::*;
 use tfhe::core_crypto::seeders::new_seeder;
 use tfhe::prelude::*;
 use tfhe::safe_serialization::{safe_deserialize, safe_serialize};
@@ -343,8 +336,31 @@ pub unsafe extern "C" fn fhe_keygen(
         let topo_data = slice::from_raw_parts(topology_ptr, topology_len);
         let topo = unpack_topology(topo_data)?;
 
+        // Derive GLWE parameters from the topology's BSK that outputs SK[0].
+        // SK[0] is the root key — its GLWE dimensions must match what the
+        // Concrete compiler chose, which varies by n_bits and ciphertext format.
+        let sk0_id = topo.sks[0].id;
+        let (glwe_dim, poly_size) = topo.bsks.iter()
+            .find(|bsk| bsk.output_id == sk0_id)
+            .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
+            .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
+
+        // Find the KSK from SK[0] to determine the small LWE dimension
+        let small_lwe_dim = topo.ksks.iter()
+            .find(|ksk| ksk.input_id == sk0_id)
+            .map(|ksk| ksk.output_lwe_dim as usize)
+            .unwrap_or(topo.sks.get(1).map(|s| s.dim as usize).unwrap_or(834));
+
+        // Build parameters matching the topology. Start from V0_10 as a
+        // template (for noise distributions, message/carry modulus, etc.)
+        // and override the GLWE/LWE dimensions to match the compiler's choice.
+        let mut params = V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64;
+        params.glwe_dimension = GlweDimension(glwe_dim);
+        params.polynomial_size = PolynomialSize(poly_size);
+        params.lwe_dimension = LweDimension(small_lwe_dim);
+
         let config = ConfigBuilder::default()
-            .use_custom_parameters(V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64)
+            .use_custom_parameters(params)
             .build();
         let (client_key, _server_key) = tfhe::generate_keys(config);
 
@@ -500,6 +516,378 @@ pub unsafe extern "C" fn fhe_free_i64_buf(ptr: *mut i64, len: usize) {
     }
 }
 
+// ── Concrete LWE encrypt/decrypt (CiphertextFormat.CONCRETE) ────────────────
+
+/// Extract the root LWE secret key (SK[0]) from a TFHE-rs ClientKey.
+fn extract_lwe_sk(ck: ClientKey)
+    -> tfhe::core_crypto::entities::LweSecretKeyOwned<u64>
+{
+    let (integer_ck, _, _, _) = ck.into_raw_parts();
+    let shortint_ck = integer_ck.into_raw_parts();
+    let (glwe_sk, _, _) = shortint_ck.into_raw_parts();
+    glwe_sk.into_lwe_secret_key()
+}
+
+/// Encrypt quantized values using Concrete's seeded LWE encoding.
+///
+/// Each value is bit-decomposed into `encoding_width` individual bits (LSB first).
+/// Each bit is encrypted as a separate seeded LWE ciphertext with Delta = 2^62.
+///
+/// Output layout: `[seed_16bytes || b_0 || b_1 || ... || b_{n_vals*width-1}]`
+/// where each `b_i` is one u64 (8 bytes).
+///
+/// # Safety
+/// All pointer arguments must not be null. `values` must have `n_vals` elements.
+/// Free output with `fhe_free_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
+    client_key: *const u8, client_key_len: usize,
+    values: *const i64, n_vals: usize,
+    encoding_width: u32,
+    lwe_dimension: u32,
+    variance: f64,
+    ct_out: *mut *mut u8, ct_len: *mut usize,
+) -> i32 {
+    match panic::catch_unwind(|| -> Result<(), String> {
+        let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
+        let vals = slice::from_raw_parts(values, n_vals);
+        let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
+            .map_err(|e| e.to_string())?;
+
+        let width = encoding_width as usize;
+        let lwe_dim = lwe_dimension as usize;
+        let n_cts = n_vals * width;
+
+        let lwe_sk = extract_lwe_sk(ck);
+        if lwe_sk.lwe_dimension().0 != lwe_dim {
+            return Err(format!(
+                "ClientKey LWE dimension {} != expected {}",
+                lwe_sk.lwe_dimension().0, lwe_dim
+            ));
+        }
+
+        // Bit-decompose values into individual bit plaintexts (LSB first)
+        let delta: u64 = 1u64 << 62; // width=1 per-bit encoding
+        let mut plaintexts: Vec<u64> = Vec::with_capacity(n_cts);
+        for &val in vals {
+            for bit_idx in 0..width {
+                let bit = ((val as u64 >> bit_idx) & 1) as u64;
+                plaintexts.push(bit.wrapping_mul(delta));
+            }
+        }
+        let plaintext_list = PlaintextList::from_container(plaintexts);
+
+        // Create seeded output container
+        let mut seeder = new_seeder();
+        let mut seeded_ct_list = SeededLweCiphertextList::new(
+            0u64,
+            LweDimension(lwe_dim).to_lwe_size(),
+            LweCiphertextCount(n_cts),
+            seeder.as_mut().seed().into(),
+            CiphertextModulus::new_native(),
+        );
+
+        let noise = Gaussian::from_dispersion_parameter(
+            StandardDev(variance.sqrt()), 0.0,
+        );
+
+        // Encrypt using the public API (handles CSPRNG internally)
+        encrypt_seeded_lwe_ciphertext_list(
+            &lwe_sk, &mut seeded_ct_list, &plaintext_list,
+            noise, seeder.as_mut(),
+        );
+
+        // Output: seed (16 bytes) || b-values (body data as u64s)
+        let seed_bytes: [u8; 16] = seeded_ct_list.compression_seed().seed.0.to_le_bytes();
+        let body_bytes = bytemuck::cast_slice::<u64, u8>(seeded_ct_list.as_ref());
+        let mut output = Vec::with_capacity(16 + body_bytes.len());
+        output.extend_from_slice(&seed_bytes);
+        output.extend_from_slice(body_bytes);
+
+        let (ptr, len) = leak_buf(output);
+        *ct_out = ptr;
+        *ct_len = len;
+        Ok(())
+    }) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => -1,
+        Err(_) => -2,
+    }
+}
+
+/// Decrypt full (uncompressed) LWE ciphertexts using Concrete's decoding.
+///
+/// Each ciphertext is `lwe_dimension + 1` u64 values: `[a_0, ..., a_n, b]`.
+/// Decryption: `plaintext = b - <a, s>`
+/// Decoding (round-to-nearest):
+///   `shift = 64 - width - 1`
+///   `decoded = ((plaintext + (1 << (shift-1))) >> shift) & ((1 << width) - 1)`
+///   if signed and `decoded >= 2^(width-1)`: `decoded -= 2^width`
+///
+/// # Safety
+/// `ct` must point to `n_cts * (lwe_dimension + 1) * 8` bytes.
+/// Free output with `fhe_free_i64_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn fhe_lwe_decrypt_full(
+    client_key: *const u8, client_key_len: usize,
+    ct: *const u8, ct_len: usize,
+    n_cts: u32,
+    encoding_width: u32, is_signed: u32,
+    lwe_dimension: u32,
+    scores_out: *mut *mut i64, scores_len: *mut usize,
+) -> i32 {
+    match panic::catch_unwind(|| -> Result<(), String> {
+        let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
+        let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
+            .map_err(|e| e.to_string())?;
+
+        let lwe_dim = lwe_dimension as usize;
+        let ct_size = lwe_dim + 1; // u64 elements per ciphertext
+        let n = n_cts as usize;
+        let width = encoding_width as usize;
+        let signed = is_signed != 0;
+
+        let expected_bytes = n * ct_size * 8;
+        if ct_len != expected_bytes {
+            return Err(format!(
+                "ct_len {} != expected {} (n_cts={}, ct_size={})",
+                ct_len, expected_bytes, n, ct_size
+            ));
+        }
+
+        let ct_u64 = slice::from_raw_parts(ct as *const u64, n * ct_size);
+        let lwe_sk = extract_lwe_sk(ck);
+
+        let shift = 64 - width - 1;
+        let half: u64 = 1u64 << (shift - 1);
+        let mask: u64 = (1u64 << width) - 1;
+
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            let base = i * ct_size;
+            let a = &ct_u64[base..base + lwe_dim];
+            let b = ct_u64[base + lwe_dim];
+
+            // Decrypt: plaintext = b - <a, s>
+            let mut dot: u64 = 0;
+            for (a_j, s_j) in a.iter().zip(lwe_sk.as_ref().iter()) {
+                dot = dot.wrapping_add(a_j.wrapping_mul(*s_j));
+            }
+            let plaintext = b.wrapping_sub(dot);
+
+            // Decode: round-to-nearest
+            let decoded = (plaintext.wrapping_add(half) >> shift) & mask;
+
+            let value = if signed && decoded >= (1u64 << (width - 1)) {
+                decoded as i64 - (1i64 << width)
+            } else {
+                decoded as i64
+            };
+
+            results.push(value);
+        }
+
+        let len = results.len();
+        let ptr = Box::into_raw(results.into_boxed_slice()) as *mut i64;
+        *scores_out = ptr;
+        *scores_len = len;
+        Ok(())
+    }) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => -1,
+        Err(_) => -2,
+    }
+}
+
+/// Serialize raw ciphertext bytes into a Cap'n Proto Value message.
+///
+/// `ct_data`: raw bytes (seeded: seed+b-values; full: n_cts*(lwe_dim+1) u64s)
+/// `shape`/`abstract_shape`: concrete and abstract shapes as u32 arrays
+/// `compression`: 0=none, 1=seed
+///
+/// # Safety
+/// All pointer arguments must not be null. Free output with `fhe_free_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn fhe_serialize_value(
+    ct_data: *const u8, ct_len: usize,
+    shape: *const u32, shape_len: usize,
+    abstract_shape: *const u32, abstract_shape_len: usize,
+    encoding_width: u32, is_signed: u32,
+    lwe_dimension: u32, key_id: u32, variance: f64,
+    compression: u32,
+    out: *mut *mut u8, out_len: *mut usize,
+) -> i32 {
+    match panic::catch_unwind(|| -> Result<(), String> {
+        let ct_bytes = slice::from_raw_parts(ct_data, ct_len);
+        let shape_vals = slice::from_raw_parts(shape, shape_len);
+        let abstract_shape_vals = slice::from_raw_parts(abstract_shape, abstract_shape_len);
+
+        // For seeded compression, the input is seed (16 bytes) + body.
+        // Concrete's Value payload stores only the body bytes (no seed).
+        let payload_bytes = if compression == 1 {
+            if ct_len < 16 {
+                return Err("seeded ciphertext too short (< 16 bytes)".into());
+            }
+            &ct_bytes[16..]
+        } else {
+            ct_bytes
+        };
+
+        let mut message = Builder::new_default();
+        {
+            use concrete_protocol_capnp::value;
+            let mut val = message.init_root::<value::Builder<'_>>();
+
+            // Payload: single Data entry (body only, seed stripped for seeded compression)
+            {
+                let mut payload = val.reborrow().init_payload();
+                let mut data_list = payload.reborrow().init_data(1);
+                data_list.set(0, payload_bytes);
+            }
+
+            // RawInfo: isSigned is always false (raw u64 container)
+            {
+                let mut raw_info = val.reborrow().init_raw_info();
+                {
+                    let s = raw_info.reborrow().init_shape();
+                    let mut dims = s.init_dimensions(shape_vals.len() as u32);
+                    for (i, &d) in shape_vals.iter().enumerate() {
+                        dims.set(i as u32, d);
+                    }
+                }
+                raw_info.set_integer_precision(64);
+                raw_info.set_is_signed(false);
+            }
+
+            // TypeInfo: lweCiphertext
+            let type_info = val.reborrow().init_type_info();
+            let mut lwe_info = type_info.init_lwe_ciphertext();
+
+            // Abstract shape
+            {
+                let s = lwe_info.reborrow().init_abstract_shape();
+                let mut dims = s.init_dimensions(abstract_shape_vals.len() as u32);
+                for (i, &d) in abstract_shape_vals.iter().enumerate() {
+                    dims.set(i as u32, d);
+                }
+            }
+
+            // Concrete shape
+            {
+                let s = lwe_info.reborrow().init_concrete_shape();
+                let mut dims = s.init_dimensions(shape_vals.len() as u32);
+                for (i, &d) in shape_vals.iter().enumerate() {
+                    dims.set(i as u32, d);
+                }
+            }
+
+            lwe_info.set_integer_precision(64);
+
+            // Encryption info
+            {
+                let mut enc = lwe_info.reborrow().init_encryption();
+                enc.set_key_id(key_id);
+                enc.set_variance(variance);
+                enc.set_lwe_dimension(lwe_dimension);
+                enc.init_modulus().init_modulus().init_native();
+            }
+
+            // Compression
+            let comp = match compression {
+                0 => concrete_protocol_capnp::Compression::None,
+                1 => concrete_protocol_capnp::Compression::Seed,
+                _ => return Err(format!("unknown compression {}", compression)),
+            };
+            lwe_info.set_compression(comp);
+
+            // Encoding: integer, native mode
+            let mut encoding = lwe_info.init_encoding().init_integer();
+            encoding.set_width(encoding_width);
+            encoding.set_is_signed(is_signed != 0);
+            encoding.init_mode().init_native();
+        }
+
+        let mut buf: Vec<u8> = Vec::new();
+        serialize::write_message(&mut buf, &message).map_err(|e| e.to_string())?;
+
+        let (ptr, len) = leak_buf(buf);
+        *out = ptr;
+        *out_len = len;
+        Ok(())
+    }) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => -1,
+        Err(_) => -2,
+    }
+}
+
+/// Deserialize a Cap'n Proto Value message, extracting raw ciphertext bytes.
+///
+/// Returns the payload bytes and the number of ciphertexts (product of all
+/// concrete shape dims except the last).
+///
+/// # Safety
+/// `data` must point to `data_len` bytes of Cap'n Proto message.
+/// Free output with `fhe_free_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn fhe_deserialize_value(
+    data: *const u8, data_len: usize,
+    ct_out: *mut *mut u8, ct_len: *mut usize,
+    n_cts_out: *mut u32,
+) -> i32 {
+    match panic::catch_unwind(|| -> Result<(), String> {
+        let bytes = slice::from_raw_parts(data, data_len);
+
+        let mut opts = capnp::message::ReaderOptions::new();
+        opts.traversal_limit_in_words(Some(1 << 30));
+        let reader = serialize::read_message(bytes, opts)
+            .map_err(|e| e.to_string())?;
+        let value = reader
+            .get_root::<concrete_protocol_capnp::value::Reader<'_>>()
+            .map_err(|e| e.to_string())?;
+
+        // Extract payload
+        let payload = value.get_payload().map_err(|e| e.to_string())?;
+        let data_list = payload.get_data().map_err(|e| e.to_string())?;
+        if data_list.len() == 0 {
+            return Err("Value has empty payload".into());
+        }
+        let raw_data = data_list.get(0);
+
+        // Determine n_cts from concrete shape
+        let type_info = value.get_type_info().map_err(|e| e.to_string())?;
+        let n_cts = match type_info.which().map_err(|e| format!("TypeInfo: {:?}", e))? {
+            concrete_protocol_capnp::type_info::Which::LweCiphertext(Ok(info)) => {
+                let concrete_shape = info.get_concrete_shape()
+                    .map_err(|e: capnp::Error| e.to_string())?;
+                let dims = concrete_shape.get_dimensions()
+                    .map_err(|e: capnp::Error| e.to_string())?;
+                // Product of all dims except the last
+                let mut total: u32 = 1;
+                for i in 0..dims.len().saturating_sub(1) {
+                    total *= dims.get(i);
+                }
+                total
+            }
+            concrete_protocol_capnp::type_info::Which::LweCiphertext(Err(e)) => {
+                return Err(format!("Failed to read LweCiphertext: {:?}", e));
+            }
+            _ => return Err("TypeInfo is not lweCiphertext".into()),
+        };
+
+        let output = raw_data.map_err(|e: capnp::Error| e.to_string())?.to_vec();
+        let (ptr, len) = leak_buf(output);
+        *ct_out = ptr;
+        *ct_len = len;
+        *n_cts_out = n_cts;
+        Ok(())
+    }) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => -1,
+        Err(_) => -2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,5 +960,275 @@ mod tests {
         let ksk0_params = ksks.get(0).get_info().unwrap().get_params().unwrap();
         assert_eq!(ksk0_params.get_input_lwe_dimension(), 2048);
         assert_eq!(ksk0_params.get_output_lwe_dimension(), 599);
+    }
+
+    #[test]
+    fn lwe_encrypt_seeded_output_size() {
+        let config = ConfigBuilder::default()
+            .use_custom_parameters(V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64)
+            .build();
+        let (client_key, _) = tfhe::generate_keys(config);
+
+        let mut ck_buf = Vec::new();
+        safe_serialize(&client_key, &mut ck_buf, LIMIT).unwrap();
+
+        let values: Vec<i64> = vec![0, 1, 3, 5, 7];
+        let width: u32 = 3;
+        let lwe_dim: u32 = 2048;
+        let variance: f64 = 8.442253112932959e-31;
+
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let rc = unsafe {
+            fhe_lwe_encrypt_seeded(
+                ck_buf.as_ptr(), ck_buf.len(),
+                values.as_ptr(), values.len(),
+                width, lwe_dim, variance,
+                &mut ct_ptr, &mut ct_len,
+            )
+        };
+        assert_eq!(rc, 0, "fhe_lwe_encrypt_seeded failed");
+        // 16 (seed) + 5*3*8 (b-values) = 136 bytes
+        assert_eq!(ct_len, 16 + 5 * 3 * 8);
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+    }
+
+    #[test]
+    fn lwe_seeded_encrypt_then_decrypt_round_trip() {
+        let config = ConfigBuilder::default()
+            .use_custom_parameters(V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64)
+            .build();
+        let (client_key, _) = tfhe::generate_keys(config);
+
+        let mut ck_buf = Vec::new();
+        safe_serialize(&client_key, &mut ck_buf, LIMIT).unwrap();
+
+        let values: Vec<i64> = vec![0, 1, 3, 5, 7];
+        let width: u32 = 3;
+        let lwe_dim: u32 = 2048;
+        let variance: f64 = 8.442253112932959e-31;
+
+        // Encrypt (seeded)
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let rc = unsafe {
+            fhe_lwe_encrypt_seeded(
+                ck_buf.as_ptr(), ck_buf.len(),
+                values.as_ptr(), values.len(),
+                width, lwe_dim, variance,
+                &mut ct_ptr, &mut ct_len,
+            )
+        };
+        assert_eq!(rc, 0);
+        let ct_bytes = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+
+        // Reconstruct a SeededLweCiphertextList from the output bytes,
+        // then decompress to full LweCiphertextList for decrypt test.
+        let seed_bytes: [u8; 16] = ct_bytes[0..16].try_into().unwrap();
+        let seed = tfhe::core_crypto::commons::math::random::CompressionSeed {
+            seed: tfhe::core_crypto::commons::math::random::Seed(
+                u128::from_le_bytes(seed_bytes)),
+        };
+        let b_values: Vec<u64> = bytemuck::cast_slice::<u8, u64>(&ct_bytes[16..]).to_vec();
+
+        let n_cts = values.len() * width as usize;
+        assert_eq!(b_values.len(), n_cts);
+
+        let seeded_list = SeededLweCiphertextList::from_container(
+            b_values,
+            LweDimension(lwe_dim as usize).to_lwe_size(),
+            seed,
+            CiphertextModulus::new_native(),
+        );
+
+        // Decompress: expand seeds into full (a, b) ciphertexts
+        let mut full_ct_list = LweCiphertextList::new(
+            0u64,
+            LweDimension(lwe_dim as usize).to_lwe_size(),
+            LweCiphertextCount(n_cts),
+            CiphertextModulus::new_native(),
+        );
+        decompress_seeded_lwe_ciphertext_list::<_, _, _, DefaultRandomGenerator>(
+            &mut full_ct_list, &seeded_list,
+        );
+
+        let full_ct_bytes = bytemuck::cast_slice::<u64, u8>(full_ct_list.as_ref());
+
+        // Decrypt each bit-ciphertext (width=1, unsigned)
+        let mut scores_ptr: *mut i64 = std::ptr::null_mut();
+        let mut scores_len: usize = 0;
+        let rc = unsafe {
+            fhe_lwe_decrypt_full(
+                ck_buf.as_ptr(), ck_buf.len(),
+                full_ct_bytes.as_ptr(), full_ct_bytes.len(),
+                n_cts as u32,
+                1,  // width=1 per bit
+                0,  // unsigned
+                lwe_dim,
+                &mut scores_ptr, &mut scores_len,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(scores_len, n_cts);
+
+        let bits = unsafe { slice::from_raw_parts(scores_ptr, scores_len) }.to_vec();
+        unsafe { fhe_free_i64_buf(scores_ptr, scores_len) };
+
+        // Reassemble bits into values (LSB first)
+        for (i, &orig_val) in values.iter().enumerate() {
+            let mut reassembled: i64 = 0;
+            for bit_idx in 0..width as usize {
+                reassembled |= (bits[i * width as usize + bit_idx] & 1) << bit_idx;
+            }
+            assert_eq!(reassembled, orig_val, "value[{}] mismatch", i);
+        }
+    }
+
+    #[test]
+    fn value_serialize_deserialize_round_trip_seeded() {
+        // Simulate seeded ciphertext: 16-byte seed prefix + 120-byte body
+        let seed = vec![0xAAu8; 16];
+        let body = vec![0xBBu8; 120]; // 5 * 3 * 8 = 120 bytes
+        let mut input = seed.clone();
+        input.extend_from_slice(&body);
+        assert_eq!(input.len(), 136);
+
+        let shape: Vec<u32> = vec![1, 5, 3];
+        let abstract_shape: Vec<u32> = vec![1, 5];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_serialize_value(
+                input.as_ptr(), input.len(),
+                shape.as_ptr(), shape.len(),
+                abstract_shape.as_ptr(), abstract_shape.len(),
+                3, 0, // width=3, unsigned
+                2048, 0, 8.442253112932959e-31,
+                1, // compression=seed
+                &mut out_ptr, &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert!(out_len > 0);
+
+        let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { fhe_free_buf(out_ptr, out_len) };
+
+        // Deserialize — should get body only (no seed prefix)
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let mut n_cts: u32 = 0;
+
+        let rc = unsafe {
+            fhe_deserialize_value(
+                serialized.as_ptr(), serialized.len(),
+                &mut ct_ptr, &mut ct_len, &mut n_cts,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(ct_len, 120); // body only, seed stripped
+        assert_eq!(n_cts, 5); // product of shape[0..2] = 1*5
+
+        let recovered = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+
+        assert_eq!(body, recovered);
+    }
+
+    #[test]
+    fn value_serialize_no_seed_stripping_when_uncompressed() {
+        let payload = vec![0xCCu8; 120];
+        let shape: Vec<u32> = vec![1, 5, 3];
+        let abstract_shape: Vec<u32> = vec![1, 5];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_serialize_value(
+                payload.as_ptr(), payload.len(),
+                shape.as_ptr(), shape.len(),
+                abstract_shape.as_ptr(), abstract_shape.len(),
+                3, 0,
+                2048, 0, 8.442253112932959e-31,
+                0, // compression=none — no stripping
+                &mut out_ptr, &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { fhe_free_buf(out_ptr, out_len) };
+
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let mut n_cts: u32 = 0;
+
+        let rc = unsafe {
+            fhe_deserialize_value(
+                serialized.as_ptr(), serialized.len(),
+                &mut ct_ptr, &mut ct_len, &mut n_cts,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(ct_len, 120); // full payload preserved
+        assert_eq!(n_cts, 5);
+
+        let recovered = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+
+        assert_eq!(payload, recovered);
+    }
+
+    #[test]
+    fn value_serialize_real_model_payload_size() {
+        // Real model: shape [1,50,3], seeded → 16-byte seed + 150*8 body
+        let seed = vec![0x42u8; 16];
+        let body = vec![0u8; 150 * 8]; // 1200 bytes
+        let mut input = seed;
+        input.extend_from_slice(&body);
+        assert_eq!(input.len(), 1216); // seed + body
+
+        let shape: Vec<u32> = vec![1, 50, 3];
+        let abstract_shape: Vec<u32> = vec![1, 50];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_serialize_value(
+                input.as_ptr(), input.len(),
+                shape.as_ptr(), shape.len(),
+                abstract_shape.as_ptr(), abstract_shape.len(),
+                3, 0,
+                2048, 0, 8.442253112932959e-31,
+                1, // compression=seed
+                &mut out_ptr, &mut out_len,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let serialized = unsafe { slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+        unsafe { fhe_free_buf(out_ptr, out_len) };
+
+        // Deserialize and verify body-only payload
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let mut n_cts: u32 = 0;
+
+        let rc = unsafe {
+            fhe_deserialize_value(
+                serialized.as_ptr(), serialized.len(),
+                &mut ct_ptr, &mut ct_len, &mut n_cts,
+            )
+        };
+        assert_eq!(rc, 0);
+        assert_eq!(ct_len, 1200); // body only, matches Python reference
+        assert_eq!(n_cts, 50); // product of shape[0..n-1] = 1*50
+
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
     }
 }
