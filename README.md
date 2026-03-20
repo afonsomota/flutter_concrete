@@ -35,7 +35,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  flutter_concrete: ^0.1.0
+  flutter_concrete: ^0.3.0
 ```
 
 ### Prerequisites
@@ -104,24 +104,30 @@ final scores = client.decryptAndDequantize(encryptedResult);
 | `Future<void> write(String key, Uint8List value)` | Persist bytes |
 | `Future<void> delete(String key)` | Delete entry |
 
+## Ciphertext formats
+
+The plugin automatically detects the ciphertext format from `client.specs.json` inside `client.zip`:
+
+| Format | `n_bits` | Circuit size | Notes |
+|--------|----------|--------------|-------|
+| **CONCRETE** (default) | 1–7 | Small | Seeded LWE encryption, Cap'n Proto Value serialization |
+| **TFHE-RS** | 8 | Large | Raw TFHE-rs `FheUint8`/`FheInt8`, bincode serialization |
+
+No code changes needed when switching formats — `ConcreteClient` routes through the appropriate path based on what the model was compiled with.
+
 ## Compatibility
 
 - **Concrete ML**: Accepts standard `client.zip` from `FHEModelDev.save()`
 - **TFHE-rs**: Git revision `1ec21a5` (matching `concrete-ml-extensions` 0.2.0)
-- **Parameter set**: `V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64`
-- **Serialization**: bincode (ciphertexts), Cap'n Proto (evaluation keys)
+- **Keygen parameters**: Derived dynamically from circuit topology
+- **Serialization**: Cap'n Proto (evaluation keys and CONCRETE ciphertexts), bincode (TFHE-RS ciphertexts)
 - **Platforms**: iOS, Android
 - **Encoding widths**: FheUint8–FheUint64, FheInt8–FheInt64 (selected automatically from `client.specs.json`)
 
 ## Known limitations
 
-1. ~~**Hardcoded eval key topology**~~ — Key topology is now parsed dynamically from `client.specs.json`, allowing support for any Concrete ML circuit configuration.
-
-2. ~~**uint8 input / int8 output only**~~ — The plugin now supports multi-width encoding (FheUint8–FheUint64, FheInt8–FheInt64), automatically selected from `client.specs.json`.
-
-3. **Single input/output tensor** — assumes one input and one output tensor per circuit.
-
-4. ~~**No precompiled binaries**~~ — Precompiled binaries are now built and signed automatically via GitHub Actions. Developers without a Rust toolchain will download them during `flutter build`.
+1. **Single input/output tensor** — assumes one input and one output tensor per circuit.
+2. **Native encoding mode only** — chunked and CRT encoding modes are not supported (fail-fast with `UnsupportedError`).
 
 ## License
 
