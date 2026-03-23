@@ -33,3 +33,6 @@ migrate_working_dir/
 /coverage/
 /rust/target/
 .worktrees/
+
+CLAUDE.md
+/docs

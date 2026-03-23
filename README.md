@@ -79,7 +79,9 @@ final ciphertext = client.quantizeAndEncrypt(featureVector);
 
 // 5. Decrypt server response
 final scores = client.decryptAndDequantize(encryptedResult);
-// scores is Float64List — apply argmax for classification
+// scores is Float64List — post-processed based on model type
+// For classifiers: probabilities (apply argmax for predicted class)
+// For regressors: predicted values
 ```
 
 ## API
@@ -94,7 +96,9 @@ final scores = client.decryptAndDequantize(encryptedResult);
 | `Uint8List get serverKey` | Raw evaluation key bytes (throws before setup) |
 | `String get serverKeyBase64` | Base64-encoded server key (cached) |
 | `Uint8List quantizeAndEncrypt(Float32List)` | Quantize + FHE encrypt |
-| `Float64List decryptAndDequantize(Uint8List)` | FHE decrypt + dequantize |
+| `Float64List decryptAndDequantize(Uint8List, {PostProcessing})` | FHE decrypt + dequantize + post-process |
+| `String? get modelClassName` | Model class from `client.zip` (e.g. `"XGBClassifier"`) |
+| `PostProcessing get detectedPostProcessing` | Auto-resolved post-processing variant |
 
 ### `KeyStorage` (abstract — you implement this)
 
@@ -103,6 +107,69 @@ final scores = client.decryptAndDequantize(encryptedResult);
 | `Future<Uint8List?> read(String key)` | Read stored bytes, or null |
 | `Future<void> write(String key, Uint8List value)` | Persist bytes |
 | `Future<void> delete(String key)` | Delete entry |
+
+## Post-processing
+
+After decryption and dequantization, `decryptAndDequantize` applies model-specific post-processing to match Python's `FHEModelClient.deserialize_decrypt_dequantize`. The model class name is parsed from `client.zip` and mapped to the correct transform automatically.
+
+### Auto-detection (default)
+
+```dart
+// PostProcessing.auto() is the default — no code changes needed.
+final scores = client.decryptAndDequantize(encryptedResult);
+
+// Check what was detected:
+print(client.modelClassName);          // e.g. "XGBClassifier"
+print(client.detectedPostProcessing);  // e.g. EnsembleClassifierPostProcessing
+```
+
+### Supported models
+
+| Model class | Variant | Behavior |
+|---|---|---|
+| `XGBClassifier` | `ensembleClassifier` | Sum trees → sigmoid/softmax |
+| `RandomForestClassifier`, `DecisionTreeClassifier` | `ensembleProbabilistic` | Sum trees (outputs are already probabilities) |
+| `XGBRegressor` | `xgbRegressor` | Sum trees + 0.5 bias |
+| `RandomForestRegressor`, `DecisionTreeRegressor` | `ensembleRegressor` | Sum trees |
+| `LogisticRegression`, `LinearSVC`, `SGDClassifier`, `NeuralNetClassifier` | `classifier` | sigmoid (2 classes) / softmax (>2) |
+| `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `SGDRegressor`, `LinearSVR`, `NeuralNetRegressor` | `regressor` | Identity |
+
+Unknown models fall back to `PostProcessing.none()` with a logged warning.
+
+### Explicit override
+
+```dart
+// Force a specific post-processing variant:
+final scores = client.decryptAndDequantize(
+  encryptedResult,
+  postProcessing: const PostProcessing.classifier(),
+);
+
+// Skip post-processing entirely:
+final raw = client.decryptAndDequantize(
+  encryptedResult,
+  postProcessing: const PostProcessing.none(),
+);
+```
+
+### Custom post-processing
+
+```dart
+// For models not in the lookup table (e.g. GLM regressors needing exp):
+import 'dart:math';
+final scores = client.decryptAndDequantize(
+  encryptedResult,
+  postProcessing: PostProcessing.custom((values, shape) {
+    return Float64List.fromList(values.map((v) => exp(v)).toList());
+  }),
+);
+```
+
+### Models requiring custom post-processing
+
+- `KNeighborsClassifier` — majority vote paradigm, use `PostProcessing.none()` or `PostProcessing.custom()`
+- `PoissonRegressor`, `GammaRegressor`, `TweedieRegressor` — need `exp()` inverse link
+- `SGDClassifier` with `modified_huber` loss — non-standard activation
 
 ## Ciphertext formats
 
@@ -128,6 +195,8 @@ No code changes needed when switching formats — `ConcreteClient` routes throug
 
 1. **Single input/output tensor** — assumes one input and one output tensor per circuit.
 2. **Native encoding mode only** — chunked and CRT encoding modes are not supported (fail-fast with `UnsupportedError`).
+3. **Single output quantizer** — only the first output quantizer is used. Models with per-output quantization (some neural networks) are not yet supported.
+4. **QuantizedModule / custom torch models** — arbitrary circuit outputs require `PostProcessing.none()` or `PostProcessing.custom()`.
 
 ## License
 

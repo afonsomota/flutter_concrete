@@ -1,3 +1,14 @@
+## 0.4.0
+
+- **Model-agnostic post-processing**: `decryptAndDequantize` now applies the correct post-processing for each Concrete ML model type (tree ensembles, linear classifiers, neural networks, regressors), matching Python's `FHEModelClient.deserialize_decrypt_dequantize`.
+- **Auto-detection from `client.zip`**: Model class name (e.g. `XGBClassifier`) is parsed from `serialized_processing.json` and mapped to the appropriate transform via a lookup table covering 17 standard Concrete ML sklearn models.
+- **`PostProcessing` sealed class**: New public API with variants `auto`, `ensembleClassifier`, `ensembleProbabilistic`, `ensembleRegressor`, `xgbRegressor`, `classifier`, `regressor`, `none`, and `custom`. Pass as optional parameter to `decryptAndDequantize` to override auto-detection.
+- **Breaking**: `dequantizeOutputs` no longer performs tree aggregation. The `nClasses` field has been removed from `QuantizationParams`. Post-processing (sum, softmax, sigmoid) is now handled by `PostProcessing`. Callers using `PostProcessing.auto()` (the default) see identical behavior.
+- New getters: `ConcreteClient.modelClassName`, `ConcreteClient.detectedPostProcessing`
+- Added dartdoc comments to all public API members
+- Added `example/example.dart`
+- Fixed lint issues (for-loop braces, unnecessary library name)
+
 ## 0.3.0
 
 - **`CiphertextFormat.CONCRETE` support**: Native seeded LWE encryption and decryption for Concrete's default ciphertext format. Enables `n_bits` 1–7 (no longer forced to `n_bits=8`), producing dramatically smaller circuits and faster inference.

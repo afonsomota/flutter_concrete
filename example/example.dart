@@ -44,6 +44,27 @@ Future<void> main() async {
   // 5. Send ciphertext to your backend, receive the encrypted result,
   //    then decrypt and dequantize.
   final encryptedResult = Uint8List(0); // replace with backend response
+
+  // Auto post-processing (default): detected from model class in client.zip.
+  print('Detected model: ${client.modelClassName}');
+  print('Post-processing: ${client.detectedPostProcessing}');
   final scores = client.decryptAndDequantize(encryptedResult);
   print('Scores: $scores');
+
+  // Explicit post-processing override:
+  final rawScores = client.decryptAndDequantize(
+    encryptedResult,
+    postProcessing: const PostProcessing.none(),
+  );
+  print('Raw dequantized: $rawScores');
+
+  // Custom post-processing:
+  final customScores = client.decryptAndDequantize(
+    encryptedResult,
+    postProcessing: PostProcessing.custom((values, shape) {
+      // Apply your own transform here.
+      return values;
+    }),
+  );
+  print('Custom: $customScores');
 }
