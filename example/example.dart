@@ -34,12 +34,15 @@ Future<void> main() async {
   final evalKeyBase64 = client.serverKeyBase64;
   print('Eval key length: ${evalKeyBase64.length} chars');
 
-  // 4. Encrypt a feature vector (e.g. from TF-IDF + LSA).
+  // 4. Encrypt a feature vector for server-side FHE inference.
+  //    The vector contents depend on your ML pipeline (e.g. embeddings,
+  //    normalized sensor readings, tabular features, etc.).
   final features = Float32List.fromList([0.1, -0.3, 0.5]);
   final ciphertext = client.quantizeAndEncrypt(features);
   print('Ciphertext size: ${ciphertext.length} bytes');
 
-  // 5. Send ciphertext to backend for FHE inference, then decrypt the result.
+  // 5. Send ciphertext to your backend, receive the encrypted result,
+  //    then decrypt and dequantize.
   final encryptedResult = Uint8List(0); // replace with backend response
   final scores = client.decryptAndDequantize(encryptedResult);
   print('Scores: $scores');
