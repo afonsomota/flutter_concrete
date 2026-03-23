@@ -7,7 +7,9 @@ void main() {
   group('quantizeInputs', () {
     test('uses n_bits for clamping range (8-bit unsigned)', () {
       final params = QuantizationParams(
-        input: [InputQuantParam(scale: 1.0, zeroPoint: 0, nBits: 8, isSigned: false)],
+        input: [
+          InputQuantParam(scale: 1.0, zeroPoint: 0, nBits: 8, isSigned: false)
+        ],
         output: OutputQuantParam(scale: 1.0, zeroPoint: 0, offset: 0),
       );
       final features = Float32List.fromList([300.0]);
@@ -17,7 +19,9 @@ void main() {
 
     test('uses n_bits for clamping range (16-bit unsigned)', () {
       final params = QuantizationParams(
-        input: [InputQuantParam(scale: 1.0, zeroPoint: 0, nBits: 16, isSigned: false)],
+        input: [
+          InputQuantParam(scale: 1.0, zeroPoint: 0, nBits: 16, isSigned: false)
+        ],
         output: OutputQuantParam(scale: 1.0, zeroPoint: 0, offset: 0),
       );
       final features = Float32List.fromList([70000.0]);

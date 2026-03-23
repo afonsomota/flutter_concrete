@@ -267,8 +267,8 @@ void main() {
 
     // Neural net classifiers
     test('resolves NeuralNetClassifier to classifier', () {
-      expect(resolveAuto('NeuralNetClassifier'),
-          isA<ClassifierPostProcessing>());
+      expect(
+          resolveAuto('NeuralNetClassifier'), isA<ClassifierPostProcessing>());
     });
 
     // Regressors (identity)
@@ -297,8 +297,7 @@ void main() {
     });
 
     test('resolves NeuralNetRegressor to regressor', () {
-      expect(
-          resolveAuto('NeuralNetRegressor'), isA<RegressorPostProcessing>());
+      expect(resolveAuto('NeuralNetRegressor'), isA<RegressorPostProcessing>());
     });
 
     // Fallbacks

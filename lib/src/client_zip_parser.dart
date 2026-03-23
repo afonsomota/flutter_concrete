@@ -94,8 +94,8 @@ class ClientZipParser {
     }
 
     // Parse output quantizer (first one)
-    final outSv = (outputQuantizers[0] as Map<String, dynamic>)
-        ['serialized_value'] as Map<String, dynamic>;
+    final outSv = (outputQuantizers[0]
+        as Map<String, dynamic>)['serialized_value'] as Map<String, dynamic>;
     final output = OutputQuantParam(
       scale: _extractFloat(outSv['scale']),
       zeroPoint: _extractInt(outSv['zero_point']),
@@ -211,20 +211,16 @@ class ClientZipParser {
     final circuitOutputs = circuit['outputs'] as List<dynamic>;
 
     if (circuitInputs.isEmpty) {
-      throw const FormatException(
-          'client.specs.json circuit has no inputs');
+      throw const FormatException('client.specs.json circuit has no inputs');
     }
     if (circuitOutputs.isEmpty) {
-      throw const FormatException(
-          'client.specs.json circuit has no outputs');
+      throw const FormatException('client.specs.json circuit has no outputs');
     }
 
-    final inputTypeInfo =
-        (circuitInputs[0] as Map<String, dynamic>)['typeInfo']
-            as Map<String, dynamic>;
-    final outputTypeInfo =
-        (circuitOutputs[0] as Map<String, dynamic>)['typeInfo']
-            as Map<String, dynamic>;
+    final inputTypeInfo = (circuitInputs[0] as Map<String, dynamic>)['typeInfo']
+        as Map<String, dynamic>;
+    final outputTypeInfo = (circuitOutputs[0]
+        as Map<String, dynamic>)['typeInfo'] as Map<String, dynamic>;
 
     final inEncoding = _parseIntegerEncoding(inputTypeInfo);
     final outEncoding = _parseIntegerEncoding(outputTypeInfo);
@@ -241,7 +237,8 @@ class ClientZipParser {
     final outputCipherInfo = _parseCipherInfo(outputTypeInfo);
 
     // Determine output shape: prefer Concrete path, fall back to TFHE-rs.
-    final outputShape = outputCipherInfo?.abstractShape ?? tfhersOutputShape ?? const [];
+    final outputShape =
+        outputCipherInfo?.abstractShape ?? tfhersOutputShape ?? const [];
 
     // Parse model class name from serialized_processing.json.
     final modelClassName = _parseModelClassName(proc);
@@ -312,8 +309,7 @@ class ClientZipParser {
   /// Expects: `{"lweCiphertext": {"encoding": {"integer": {"width": N, "isSigned": B}}}}`
   static (int, bool) _parseIntegerEncoding(Map<String, dynamic> typeInfo) {
     final lweCiphertext = typeInfo['lweCiphertext'] as Map<String, dynamic>;
-    final encodingWrapper =
-        lweCiphertext['encoding'] as Map<String, dynamic>;
+    final encodingWrapper = lweCiphertext['encoding'] as Map<String, dynamic>;
     final integer = encodingWrapper['integer'] as Map<String, dynamic>;
     final width = (integer['width'] as num).toInt();
     final isSigned = integer['isSigned'] as bool;

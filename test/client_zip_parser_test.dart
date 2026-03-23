@@ -99,7 +99,10 @@ void main() {
               'n_bits': 8,
               'is_signed': false,
               'scale': {'type_name': 'numpy_float', 'serialized_value': 0.01},
-              'zero_point': {'type_name': 'numpy_integer', 'serialized_value': 42},
+              'zero_point': {
+                'type_name': 'numpy_integer',
+                'serialized_value': 42
+              },
               'offset': 0,
             }
           }
@@ -252,8 +255,8 @@ Uint8List _createZipWithProcessingAndSpecs(
   archive.addFile(
       ArchiveFile('serialized_processing.json', procBytes.length, procBytes));
   final specsBytes = utf8.encode(jsonEncode(specs));
-  archive.addFile(
-      ArchiveFile('client.specs.json', specsBytes.length, specsBytes));
+  archive
+      .addFile(ArchiveFile('client.specs.json', specsBytes.length, specsBytes));
   return Uint8List.fromList(ZipEncoder().encode(archive)!);
 }
 

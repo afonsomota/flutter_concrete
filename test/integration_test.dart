@@ -107,8 +107,8 @@ void main() {
     // 2. Upload eval key to backend
     print('Uploading eval key...');
     final httpClient = HttpClient();
-    final keyReq = await httpClient
-        .postUrl(Uri.parse('http://localhost:8000/fhe/key'));
+    final keyReq =
+        await httpClient.postUrl(Uri.parse('http://localhost:8000/fhe/key'));
     keyReq.headers.contentType = ContentType.json;
     keyReq.write(jsonEncode({
       'client_id': 'dart_integration_test',
@@ -126,8 +126,11 @@ void main() {
     }
 
     final ctRaw = native.lweEncryptSeeded(
-      clientKey, quantized,
-      inputInfo.encodingWidth, inputInfo.lweDimension, inputInfo.variance,
+      clientKey,
+      quantized,
+      inputInfo.encodingWidth,
+      inputInfo.lweDimension,
+      inputInfo.variance,
     );
     final encrypted = native.serializeValue(
       ctRaw, inputInfo.concreteShape, inputInfo.abstractShape,
@@ -152,8 +155,7 @@ void main() {
     expect(predictResp.statusCode, 200,
         reason: 'Backend rejected ciphertext: $predictBody');
 
-    final resultB64 =
-        jsonDecode(predictBody)['encrypted_result_b64'] as String;
+    final resultB64 = jsonDecode(predictBody)['encrypted_result_b64'] as String;
     final resultBytes = base64Decode(resultB64);
     print('  Result: ${resultBytes.length} bytes');
 
@@ -163,8 +165,11 @@ void main() {
     print('  Deserialized: nCts=$nCts');
 
     final rawScores = native.lweDecryptFull(
-      clientKey, ctData, nCts,
-      outputInfo.encodingWidth, outputInfo.encodingIsSigned,
+      clientKey,
+      ctData,
+      nCts,
+      outputInfo.encodingWidth,
+      outputInfo.encodingIsSigned,
       outputInfo.lweDimension,
     );
     print('  Decrypted ${rawScores.length} raw scores');

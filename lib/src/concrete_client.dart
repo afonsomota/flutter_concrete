@@ -156,21 +156,31 @@ class ConcreteClient {
       }
       // Concrete LWE path: seeded encrypt → serialize as Value
       final ct = _native.lweEncryptSeeded(
-        _clientKey!, quantized,
-        info.encodingWidth, info.lweDimension, info.variance,
+        _clientKey!,
+        quantized,
+        info.encodingWidth,
+        info.lweDimension,
+        info.variance,
       );
       return _native.serializeValue(
-        ct, info.concreteShape, info.abstractShape,
-        info.encodingWidth, info.encodingIsSigned,
-        info.lweDimension, info.keyId, info.variance,
+        ct,
+        info.concreteShape,
+        info.abstractShape,
+        info.encodingWidth,
+        info.encodingIsSigned,
+        info.lweDimension,
+        info.keyId,
+        info.variance,
         info.compression == ConcreteCipherCompression.seed ? 1 : 0,
       );
     }
 
     // TFHE-rs path (existing)
     return _native.encrypt(
-      _clientKey!, quantized,
-      _encoding!.tfheInputBitWidth, _encoding!.inputIsSigned,
+      _clientKey!,
+      quantized,
+      _encoding!.tfheInputBitWidth,
+      _encoding!.inputIsSigned,
     );
   }
 
@@ -196,14 +206,20 @@ class ConcreteClient {
       // Concrete LWE path: deserialize Value → full decrypt
       final (ctData, nCts) = _native.deserializeValue(ciphertext);
       rawScores = _native.lweDecryptFull(
-        _clientKey!, ctData,
-        nCts, info.encodingWidth, info.encodingIsSigned, info.lweDimension,
+        _clientKey!,
+        ctData,
+        nCts,
+        info.encodingWidth,
+        info.encodingIsSigned,
+        info.lweDimension,
       );
     } else {
       // TFHE-rs path
       rawScores = _native.decrypt(
-        _clientKey!, ciphertext,
-        _encoding!.tfheOutputBitWidth, _encoding!.outputIsSigned,
+        _clientKey!,
+        ciphertext,
+        _encoding!.tfheOutputBitWidth,
+        _encoding!.outputIsSigned,
       );
     }
 
