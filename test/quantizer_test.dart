@@ -62,17 +62,16 @@ void main() {
       expect(result[1], 64.0);
     });
 
-    test('aggregates per-tree outputs when nClasses is set', () {
+    test('returns element-wise dequantized values without aggregation', () {
       final params = QuantizationParams(
         input: [],
         output: OutputQuantParam(scale: 1.0, zeroPoint: 0, offset: 0),
-        nClasses: 2,
       );
       final raw = Int64List.fromList([1, 2, 3, 4, 5, 6]);
       final result = params.dequantizeOutputs(raw);
-      expect(result.length, 2);
-      expect(result[0], 6.0);
-      expect(result[1], 15.0);
+      expect(result.length, 6);
+      expect(result[0], 1.0);
+      expect(result[5], 6.0);
     });
   });
 }

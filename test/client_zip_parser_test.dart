@@ -43,12 +43,18 @@ void main() {
       expect(result.quantParams.output.offset, isA<int>());
     });
 
-    test('parses nClasses from client.specs.json', () {
+    test('parses outputShape from client.specs.json', () {
       final result = ClientZipParser.parse(zipBytes);
-      // CONCRETE format has null tfhers_specs shapes; nClasses comes from
-      // abstractShape instead. For TFHE-rs format, this would be 5.
-      // The current client.zip is CONCRETE format.
-      expect(result.quantParams.nClasses, anyOf(5, isNull));
+      expect(result.outputShape, isNotEmpty);
+      // XGBClassifier with 5 classes: abstractShape should contain 5.
+      expect(result.outputShape.length, greaterThanOrEqualTo(2));
+    });
+
+    test('parses modelClassName from model_type in serialized_processing.json',
+        () {
+      final result = ClientZipParser.parse(zipBytes);
+      // The real client.zip is compiled from XGBClassifier.
+      expect(result.modelClassName, 'XGBClassifier');
     });
 
     test('accepts non-8-bit quantization', () {
