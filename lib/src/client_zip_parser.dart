@@ -31,12 +31,21 @@ class ParseResult {
   /// Concrete LWE cipher info for output (null if TFHE-rs format).
   final ConcreteCipherInfo? outputCipherInfo;
 
+  /// Output abstract shape from circuit specs (e.g. `[1, 5, 200]`).
+  final List<int> outputShape;
+
+  /// Model class name from `serialized_processing.json` (e.g. `"XGBClassifier"`).
+  /// Null if parsing failed or field not present.
+  final String? modelClassName;
+
   const ParseResult({
     required this.quantParams,
     required this.topology,
     required this.encoding,
     this.inputCipherInfo,
     this.outputCipherInfo,
+    this.outputShape = const [],
+    this.modelClassName,
   });
 }
 
@@ -102,27 +111,23 @@ class ClientZipParser {
     final specs = jsonDecode(utf8.decode(specsFile.content as List<int>))
         as Map<String, dynamic>;
 
-    // Parse nClasses from tfhers_specs output shape.
-    int? nClasses;
+    // Parse output shape from tfhers_specs if available.
+    List<int>? tfhersOutputShape;
     final tfhersSpecs = specs['tfhers_specs'] as Map<String, dynamic>?;
     if (tfhersSpecs != null) {
       final outputShapes =
           tfhersSpecs['output_shapes_per_func'] as Map<String, dynamic>?;
       if (outputShapes != null && outputShapes.isNotEmpty) {
-        // First function's first output shape, e.g. [1, 5, 200].
         final shapes = outputShapes.values.first as List<dynamic>;
         if (shapes.isNotEmpty && shapes[0] is List) {
-          final shape = shapes[0] as List<dynamic>;
-          // Shape is [batch, nClasses, nTrees] — extract nClasses.
-          if (shape.length >= 2) {
-            nClasses = (shape[1] as num).toInt();
-          }
+          tfhersOutputShape = (shapes[0] as List<dynamic>)
+              .map((d) => (d as num).toInt())
+              .toList();
         }
       }
     }
 
-    final quantParams =
-        QuantizationParams(input: input, output: output, nClasses: nClasses);
+    final quantParams = QuantizationParams(input: input, output: output);
 
     // --- Parse KeyTopology from keyset ---
     final keyset = specs['keyset'] as Map<String, dynamic>;
@@ -235,29 +240,20 @@ class ClientZipParser {
     final inputCipherInfo = _parseCipherInfo(inputTypeInfo);
     final outputCipherInfo = _parseCipherInfo(outputTypeInfo);
 
-    // Derive nClasses from output abstractShape if not set from tfhers_specs.
-    // Output abstractShape is [batch, nClasses, nTrees] for tree-ensemble models.
-    if (nClasses == null && outputCipherInfo != null) {
-      final absShape = outputCipherInfo.abstractShape;
-      if (absShape.length >= 2) {
-        nClasses = absShape[1];
-      }
-    }
+    // Determine output shape: prefer Concrete path, fall back to TFHE-rs.
+    final outputShape = outputCipherInfo?.abstractShape ?? tfhersOutputShape ?? const [];
 
-    final quantParamsWithClasses = nClasses != null && nClasses != quantParams.nClasses
-        ? QuantizationParams(
-            input: quantParams.input,
-            output: quantParams.output,
-            nClasses: nClasses,
-          )
-        : quantParams;
+    // Parse model class name from serialized_processing.json.
+    final modelClassName = _parseModelClassName(proc);
 
     return ParseResult(
-      quantParams: quantParamsWithClasses,
+      quantParams: quantParams,
       topology: topology,
       encoding: encoding,
       inputCipherInfo: inputCipherInfo,
       outputCipherInfo: outputCipherInfo,
+      outputShape: outputShape,
+      modelClassName: modelClassName,
     );
   }
 
@@ -342,5 +338,40 @@ class ClientZipParser {
       return (value['serialized_value'] as num).toInt();
     }
     throw FormatException('Cannot parse int from: $value');
+  }
+
+  /// Parse the model class name from the `model_type` field in
+  /// `serialized_processing.json`.
+  ///
+  /// The field is a Skops-serialized Python type object:
+  /// `{"type_name": "type", "serialized_value": "<hex-encoded ZIP>"}`.
+  /// The ZIP contains `schema.json` with a `__class__` field.
+  ///
+  /// Returns null if parsing fails for any reason.
+  static String? _parseModelClassName(Map<String, dynamic> proc) {
+    try {
+      final modelType = proc['model_type'] as Map<String, dynamic>?;
+      if (modelType == null) return null;
+
+      final hexString = modelType['serialized_value'] as String?;
+      if (hexString == null) return null;
+
+      // Decode hex string to bytes.
+      final bytes = Uint8List(hexString.length ~/ 2);
+      for (int i = 0; i < bytes.length; i++) {
+        bytes[i] = int.parse(hexString.substring(i * 2, i * 2 + 2), radix: 16);
+      }
+
+      // Parse as ZIP and extract schema.json.
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final schemaFile = archive.findFile('schema.json');
+      if (schemaFile == null) return null;
+
+      final schema = jsonDecode(utf8.decode(schemaFile.content as List<int>))
+          as Map<String, dynamic>;
+      return schema['__class__'] as String?;
+    } catch (_) {
+      return null;
+    }
   }
 }

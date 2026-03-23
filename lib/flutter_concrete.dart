@@ -6,3 +6,15 @@ library;
 
 export 'src/concrete_client.dart' show ConcreteClient;
 export 'src/key_storage.dart' show KeyStorage;
+export 'src/post_processing.dart'
+    show
+        PostProcessing,
+        AutoPostProcessing,
+        EnsembleClassifierPostProcessing,
+        EnsembleProbabilisticPostProcessing,
+        EnsembleRegressorPostProcessing,
+        XgbRegressorPostProcessing,
+        ClassifierPostProcessing,
+        RegressorPostProcessing,
+        NonePostProcessing,
+        CustomPostProcessing;

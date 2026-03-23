@@ -10,6 +10,7 @@ import 'concrete_cipher_info.dart';
 import 'fhe_native.dart';
 import 'key_storage.dart';
 import 'key_topology.dart';
+import 'post_processing.dart';
 import 'quantizer.dart';
 
 const _kClientKeyStorageKey = 'fhe_client_key';
@@ -32,6 +33,9 @@ class ConcreteClient {
   CircuitEncoding? _encoding;
   ConcreteCipherInfo? _inputCipherInfo;
   ConcreteCipherInfo? _outputCipherInfo;
+  List<int> _outputShape = const [];
+  String? _modelClassName;
+  PostProcessing? _resolvedPostProcessing;
   Uint8List? _clientKey;
   Uint8List? _serverKey;
   String? _serverKeyB64Cache;
@@ -39,6 +43,20 @@ class ConcreteClient {
 
   /// Whether [setup] has completed successfully.
   bool get isReady => _isReady;
+
+  /// Model class name from `client.zip` (e.g. `"XGBClassifier"`).
+  /// Available after [setup].
+  String? get modelClassName {
+    _requireReady();
+    return _modelClassName;
+  }
+
+  /// The post-processing variant resolved from [modelClassName] at setup time.
+  /// Available after [setup].
+  PostProcessing get detectedPostProcessing {
+    _requireReady();
+    return _resolvedPostProcessing!;
+  }
 
   /// The serialized evaluation (server) key. Upload this to the backend.
   Uint8List get serverKey {
@@ -67,6 +85,9 @@ class ConcreteClient {
     _encoding = result.encoding;
     _inputCipherInfo = result.inputCipherInfo;
     _outputCipherInfo = result.outputCipherInfo;
+    _outputShape = result.outputShape;
+    _modelClassName = result.modelClassName;
+    _resolvedPostProcessing = resolveAuto(_modelClassName);
 
     // 2. Compute model hash from topology + encoding
     final currentHash = _topology!.computeModelHash(_encoding!);
@@ -113,6 +134,9 @@ class ConcreteClient {
     _encoding = null;
     _inputCipherInfo = null;
     _outputCipherInfo = null;
+    _outputShape = const [];
+    _modelClassName = null;
+    _resolvedPostProcessing = null;
     _clientKey = null;
     _serverKey = null;
     _serverKeyB64Cache = null;
@@ -150,10 +174,19 @@ class ConcreteClient {
     );
   }
 
-  /// Decrypt an FHE result ciphertext and dequantize to float scores.
-  Float64List decryptAndDequantize(Uint8List ciphertext) {
+  /// Decrypt an FHE result ciphertext, dequantize, and apply post-processing.
+  ///
+  /// By default uses [PostProcessing.auto], which resolves from the model
+  /// class name in `client.zip`. Pass an explicit variant to override.
+  ///
+  /// See [PostProcessing] for available variants and their behavior.
+  Float64List decryptAndDequantize(
+    Uint8List ciphertext, {
+    PostProcessing postProcessing = const PostProcessing.auto(),
+  }) {
     _requireReady();
 
+    Int64List rawScores;
     if (_outputCipherInfo != null) {
       final info = _outputCipherInfo!;
       if (!info.isNativeMode) {
@@ -162,19 +195,26 @@ class ConcreteClient {
       }
       // Concrete LWE path: deserialize Value → full decrypt
       final (ctData, nCts) = _native.deserializeValue(ciphertext);
-      final rawScores = _native.lweDecryptFull(
+      rawScores = _native.lweDecryptFull(
         _clientKey!, ctData,
         nCts, info.encodingWidth, info.encodingIsSigned, info.lweDimension,
       );
-      return _quantParams!.dequantizeOutputs(rawScores);
+    } else {
+      // TFHE-rs path
+      rawScores = _native.decrypt(
+        _clientKey!, ciphertext,
+        _encoding!.tfheOutputBitWidth, _encoding!.outputIsSigned,
+      );
     }
 
-    // TFHE-rs path (existing)
-    final rawScores = _native.decrypt(
-      _clientKey!, ciphertext,
-      _encoding!.tfheOutputBitWidth, _encoding!.outputIsSigned,
-    );
-    return _quantParams!.dequantizeOutputs(rawScores);
+    // Dequantize (element-wise).
+    final dequantized = _quantParams!.dequantizeOutputs(rawScores);
+
+    // Apply post-processing.
+    final pp = postProcessing is AutoPostProcessing
+        ? _resolvedPostProcessing!
+        : postProcessing;
+    return pp.apply(dequantized, _outputShape);
   }
 
   void _requireReady() {
