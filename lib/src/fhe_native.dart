@@ -261,7 +261,9 @@ class FheNative {
       int encodingWidth, int lweDimension, double variance) {
     final ckPtr = _toNativeUint8(clientKey);
     final valPtr = malloc<Int64>(values.length);
-    for (int i = 0; i < values.length; i++) valPtr[i] = values[i];
+    for (int i = 0; i < values.length; i++) {
+      valPtr[i] = values[i];
+    }
     final ctPtrPtr = malloc<Pointer<Uint8>>();
     final ctLen = malloc<Size>();
     try {
@@ -289,7 +291,9 @@ class FheNative {
       if (rc != 0) throw StateError('fhe_lwe_decrypt_full failed (code $rc)');
       final len = outLen.value;
       final result = Int64List(len);
-      for (int i = 0; i < len; i++) result[i] = outPtrPtr.value[i];
+      for (int i = 0; i < len; i++) {
+        result[i] = outPtrPtr.value[i];
+      }
       _freeI64Buf(outPtrPtr.value, len);
       return result;
     } finally {
@@ -304,7 +308,9 @@ class FheNative {
       int lweDimension, int keyId, double variance, int compression) {
     final ctPtr = _toNativeUint8(ctData);
     final shapePtr = malloc<Uint32>(shape.length);
-    for (int i = 0; i < shape.length; i++) shapePtr[i] = shape[i];
+    for (int i = 0; i < shape.length; i++) {
+      shapePtr[i] = shape[i];
+    }
     final absShapePtr = malloc<Uint32>(abstractShape.length);
     for (int i = 0; i < abstractShape.length; i++) {
       absShapePtr[i] = abstractShape[i];

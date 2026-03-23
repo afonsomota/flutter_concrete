@@ -16,7 +16,12 @@ const _kClientKeyStorageKey = 'fhe_client_key';
 const _kServerKeyStorageKey = 'fhe_server_key';
 const _kModelHashStorageKey = 'fhe_model_hash';
 
+/// FHE client for Concrete ML models.
+///
+/// Parses a Concrete ML `client.zip`, manages TFHE-rs key generation and
+/// persistence, and provides quantize+encrypt / decrypt+dequantize operations.
 class ConcreteClient {
+  /// Storage key used to persist the model hash for key invalidation.
   static const modelHashStorageKey = _kModelHashStorageKey;
 
   FheNative? _nativeInstance;
@@ -32,18 +37,23 @@ class ConcreteClient {
   String? _serverKeyB64Cache;
   bool _isReady = false;
 
+  /// Whether [setup] has completed successfully.
   bool get isReady => _isReady;
 
+  /// The serialized evaluation (server) key. Upload this to the backend.
   Uint8List get serverKey {
     _requireReady();
     return _serverKey!;
   }
 
+  /// Base64-encoded evaluation key, cached after first access.
   String get serverKeyBase64 {
     _requireReady();
     return _serverKeyB64Cache ??= base64Encode(_serverKey!);
   }
 
+  /// Initialize the client: parse [clientZipBytes], generate or restore keys
+  /// via [storage], and prepare for encryption/decryption.
   Future<void> setup({
     required Uint8List clientZipBytes,
     required KeyStorage storage,
@@ -95,6 +105,7 @@ class ConcreteClient {
     _isReady = true;
   }
 
+  /// Clear all state. The client must be [setup] again before use.
   void reset() {
     _isReady = false;
     _quantParams = null;
@@ -108,6 +119,7 @@ class ConcreteClient {
     _nativeInstance = null;
   }
 
+  /// Quantize a float feature vector and encrypt it for server-side FHE inference.
   Uint8List quantizeAndEncrypt(Float32List features) {
     _requireReady();
     final quantized = _quantParams!.quantizeInputs(features);
@@ -138,6 +150,7 @@ class ConcreteClient {
     );
   }
 
+  /// Decrypt an FHE result ciphertext and dequantize to float scores.
   Float64List decryptAndDequantize(Uint8List ciphertext) {
     _requireReady();
 
