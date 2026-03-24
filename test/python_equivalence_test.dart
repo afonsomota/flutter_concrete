@@ -9,7 +9,6 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_concrete/src/client_zip_parser.dart';
 import 'package:flutter_concrete/src/post_processing.dart';
-import 'package:flutter_concrete/src/quantizer.dart';
 
 String sha256Hex(Uint8List bytes) {
   return sha256.convert(bytes).toString();
@@ -79,7 +78,8 @@ void testModelEquivalence(String dirName) {
       final resolved = resolveAuto(fixture.parseResult.modelClassName);
       expect(resolved, isNot(isA<AutoPostProcessing>()));
       expect(resolved, isNot(isA<NonePostProcessing>()),
-          reason: '${fixture.expectedModelClass} should resolve to a known variant');
+          reason:
+              '${fixture.expectedModelClass} should resolve to a known variant');
     });
 
     test('quantizeInputs matches Python', () {
@@ -93,7 +93,8 @@ void testModelEquivalence(String dirName) {
             .map((v) => (v as num).toInt())
             .toList();
 
-        final result = fixture.parseResult.quantParams.quantizeInputs(inputFloat);
+        final result =
+            fixture.parseResult.quantParams.quantizeInputs(inputFloat);
 
         for (int i = 0; i < expected.length; i++) {
           expect(result[i], expected[i],
@@ -114,7 +115,8 @@ void testModelEquivalence(String dirName) {
             .map((v) => (v as num).toDouble())
             .toList();
 
-        final result = fixture.parseResult.quantParams.dequantizeOutputs(rawInts);
+        final result =
+            fixture.parseResult.quantParams.dequantizeOutputs(rawInts);
 
         for (int i = 0; i < expected.length; i++) {
           expect(result[i], closeTo(expected[i], 1e-10),
