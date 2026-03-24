@@ -1,3 +1,4 @@
+@Tags(['integration'])
 /// Integration test for CiphertextFormat.CONCRETE end-to-end flow.
 ///
 /// Requires:

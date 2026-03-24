@@ -18,11 +18,34 @@ jobs:
       - run: flutter pub get
       - run: dart format --set-exit-if-changed .
       - run: flutter analyze
+      - run: flutter test --exclude-tags=integration
+
+  # On main: precompile native binaries, then run full tests and builds
+  precompile:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: analyze-and-test
+    uses: ./.github/workflows/precompile.yml
+    secrets:
+      PRECOMPILE_PRIVATE_KEY: ${{ secrets.PRECOMPILE_PRIVATE_KEY }}
+
+  integration-test:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: precompile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
       - run: flutter test
 
   build-android:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    needs: analyze-and-test
+    needs: precompile
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,15 +61,15 @@ jobs:
         run: |
           flutter create --template=app --platforms=android /tmp/test_app
           cd /tmp/test_app
-          # Add plugin as path dependency
           flutter pub add flutter_concrete --path=$GITHUB_WORKSPACE
       - name: Build APK (debug)
         working-directory: /tmp/test_app
         run: flutter build apk --debug
 
   build-ios:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: macos-latest
-    needs: analyze-and-test
+    needs: precompile
     steps:
       - uses: actions/checkout@v4
         with:
