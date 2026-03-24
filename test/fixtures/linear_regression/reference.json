@@ -1,0 +1,123 @@
+{
+  "concrete_ml_version": "1.9.0",
+  "client_zip_sha256": "6e55db31641ac94f9f1f03eccfd8dbea432b85a9de74f35991f2938ec34db122",
+  "model_class": "LinearRegression",
+  "n_classes": 0,
+  "n_features": 3,
+  "output_shape": [
+    1,
+    1
+  ],
+  "test_vectors": [
+    {
+      "description": "zeros",
+      "input_float": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "quantized_input": [
+        -1,
+        -1,
+        -1
+      ],
+      "raw_output_ints": [
+        -4
+      ],
+      "dequantized_output": [
+        -0.5006029888271591
+      ],
+      "post_processed": [
+        -0.5006029888271591
+      ]
+    },
+    {
+      "description": "ones",
+      "input_float": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "quantized_input": [
+        0,
+        0,
+        0
+      ],
+      "raw_output_ints": [
+        0
+      ],
+      "dequantized_output": [
+        -0.4672294562386819
+      ],
+      "post_processed": [
+        -0.4672294562386819
+      ]
+    },
+    {
+      "description": "normal",
+      "input_float": [
+        -1.0856306552886963,
+        0.9973454475402832,
+        0.28297850489616394
+      ],
+      "quantized_input": [
+        -2,
+        0,
+        -1
+      ],
+      "raw_output_ints": [
+        1
+      ],
+      "dequantized_output": [
+        -0.4588860730915626
+      ],
+      "post_processed": [
+        -0.4588860730915626
+      ]
+    },
+    {
+      "description": "boundary",
+      "input_float": [
+        3.0,
+        3.0,
+        3.0
+      ],
+      "quantized_input": [
+        2,
+        2,
+        2
+      ],
+      "raw_output_ints": [
+        -3
+      ],
+      "dequantized_output": [
+        -0.49225960568003985
+      ],
+      "post_processed": [
+        -0.49225960568003985
+      ]
+    },
+    {
+      "description": "realistic",
+      "input_float": [
+        -0.7531473636627197,
+        -0.2893001139163971,
+        0.8257182836532593
+      ],
+      "quantized_input": [
+        -2,
+        -1,
+        0
+      ],
+      "raw_output_ints": [
+        -4
+      ],
+      "dequantized_output": [
+        -0.5006029888271591
+      ],
+      "post_processed": [
+        -0.5006029888271591
+      ]
+    }
+  ]
+}
