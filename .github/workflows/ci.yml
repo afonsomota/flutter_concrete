@@ -52,7 +52,38 @@ jobs:
       - name: Run tests (including integration, excluding backend)
         env:
           LD_LIBRARY_PATH: rust/target/debug
-        run: flutter test --tags=integration --exclude-tags=backend
+        run: flutter test --tags=integration --exclude-tags=backend,server_equivalence
+
+  server-equivalence-test:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: precompile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Cap'n Proto
+        run: sudo apt-get update && sudo apt-get install -y capnproto
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build native library
+        working-directory: rust
+        run: cargo build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install Python dependencies
+        run: pip install -r test/fixtures/requirements.txt
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - run: flutter pub get
+      - name: Run server equivalence tests
+        env:
+          LD_LIBRARY_PATH: rust/target/debug
+        run: flutter test --tags=server_equivalence
 
   build-android:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
