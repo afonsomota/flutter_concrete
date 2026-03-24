@@ -6,6 +6,7 @@
 - **Breaking**: `dequantizeOutputs` no longer performs tree aggregation. The `nClasses` field has been removed from `QuantizationParams`. Post-processing (sum, softmax, sigmoid) is now handled by `PostProcessing`. Callers using `PostProcessing.auto()` (the default) see identical behavior.
 - New getters: `ConcreteClient.modelClassName`, `ConcreteClient.detectedPostProcessing`
 - Added dartdoc comments to all public API members
+- `OutputQuantParam` now supports per-class zero points via optional `zeroPoints` field; single shared input quantizer support for linear models
 - Added `example/example.dart`
 - Fixed lint issues (for-loop braces, unnecessary library name)
 

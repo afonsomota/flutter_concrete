@@ -90,15 +90,20 @@ class ClientZipParser {
       input.add(InputQuantParam(
         scale: _extractFloat(sv['scale']),
         zeroPoint: _extractInt(sv['zero_point']),
+        nBits: sv.containsKey('n_bits') ? (sv['n_bits'] as num).toInt() : 8,
+        isSigned: sv.containsKey('is_signed') ? sv['is_signed'] as bool : false,
       ));
     }
 
     // Parse output quantizer (first one)
     final outSv = (outputQuantizers[0]
         as Map<String, dynamic>)['serialized_value'] as Map<String, dynamic>;
+    final zpRaw = outSv['zero_point'];
+    final zpResult = _extractIntOrList(zpRaw);
     final output = OutputQuantParam(
       scale: _extractFloat(outSv['scale']),
-      zeroPoint: _extractInt(outSv['zero_point']),
+      zeroPoint: zpResult.$1,
+      zeroPoints: zpResult.$2,
       offset: outSv.containsKey('offset') ? _extractInt(outSv['offset']) : 0,
     );
 
@@ -334,6 +339,26 @@ class ClientZipParser {
       return (value['serialized_value'] as num).toInt();
     }
     throw FormatException('Cannot parse int from: $value');
+  }
+
+  /// Extract an int that may be a scalar or a per-class array.
+  ///
+  /// Returns `(scalar, null)` for scalar values, or `(first, list)` for
+  /// array values like `{"type_name": "numpy_array", "serialized_value": [[14, 0, -10]]}`.
+  static (int, List<int>?) _extractIntOrList(dynamic value) {
+    if (value is num) return (value.toInt(), null);
+    if (value is Map<String, dynamic>) {
+      final sv = value['serialized_value'];
+      if (sv is num) return (sv.toInt(), null);
+      if (sv is List) {
+        // numpy_array: serialized_value is [[v0, v1, ...]] (nested list)
+        final flat = sv.first is List
+            ? (sv.first as List).map((e) => (e as num).toInt()).toList()
+            : sv.map((e) => (e as num).toInt()).toList();
+        return (flat.first, flat);
+      }
+    }
+    throw FormatException('Cannot parse int or int list from: $value');
   }
 
   /// Parse the model class name from the `model_type` field in

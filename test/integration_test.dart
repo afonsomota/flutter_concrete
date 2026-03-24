@@ -1,10 +1,13 @@
 /// Integration tests for CiphertextFormat.CONCRETE (no backend required).
 ///
 /// Requires:
-///   1. libfhe_client.so built and on LD_LIBRARY_PATH
-///   2. client.zip from a CONCRETE-format model
+///   1. Native library built: `cd rust && cargo build`
+///   2. client.zip from a CONCRETE-format model in test/fixtures/
 ///
 /// Run with:
+///   # macOS
+///   DYLD_LIBRARY_PATH=rust/target/debug flutter test test/integration_test.dart
+///   # Linux
 ///   LD_LIBRARY_PATH=rust/target/debug flutter test test/integration_test.dart
 @Tags(['integration'])
 library;
