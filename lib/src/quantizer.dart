@@ -19,17 +19,24 @@ class InputQuantParam {
   });
 }
 
-/// Output dequantization parameters (shared across all output classes).
+/// Output dequantization parameters.
+///
+/// Supports both scalar (shared across all outputs) and per-class zero points.
+/// When [zeroPoints] is provided, each output element uses its own zero point
+/// (cycling if the raw output is longer than the list). Otherwise [zeroPoint]
+/// is used for all elements.
 class OutputQuantParam {
   final double scale;
   final int zeroPoint;
+  final List<int>? zeroPoints;
   final int offset;
   final int nBits;
   final bool isSigned;
   const OutputQuantParam({
     required this.scale,
-    required this.zeroPoint,
     required this.offset,
+    this.zeroPoint = 0,
+    this.zeroPoints,
     this.nBits = 8,
     this.isSigned = true,
   });
@@ -53,12 +60,12 @@ class QuantizationParams {
   /// - Signed: [-(1 << (nBits - 1)), (1 << (nBits - 1)) - 1]
   Int64List quantizeInputs(Float32List features) {
     assert(
-      features.length == input.length,
+      features.length == input.length || input.length == 1,
       'Feature length ${features.length} != quant param length ${input.length}',
     );
     final result = Int64List(features.length);
     for (int i = 0; i < features.length; i++) {
-      final p = input[i];
+      final p = input[i % input.length];
       final q = (features[i] / p.scale).round() + p.zeroPoint;
       if (p.isSigned) {
         final minVal = -(1 << (p.nBits - 1));
@@ -80,9 +87,11 @@ class QuantizationParams {
   /// handled separately by [PostProcessing].
   Float64List dequantizeOutputs(Int64List rawScores) {
     final p = output;
+    final zps = p.zeroPoints;
     final result = Float64List(rawScores.length);
     for (int i = 0; i < rawScores.length; i++) {
-      result[i] = (rawScores[i] + p.offset - p.zeroPoint) * p.scale;
+      final zp = zps != null ? zps[i % zps.length] : p.zeroPoint;
+      result[i] = (rawScores[i] + p.offset - zp) * p.scale;
     }
     return result;
   }
