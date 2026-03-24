@@ -197,6 +197,77 @@ void main() {
       expect(result.outputCipherInfo, isNull);
     });
 
+    test('parses nBits and isSigned from input quantizers', () {
+      final proc = {
+        'input_quantizers': [
+          {
+            'type_name': 'UniformQuantizer',
+            'serialized_value': {
+              'n_bits': 3,
+              'is_signed': false,
+              'scale': {'type_name': 'numpy_float', 'serialized_value': 0.01},
+              'zero_point': 0,
+              'offset': 0,
+            }
+          },
+          {
+            'type_name': 'UniformQuantizer',
+            'serialized_value': {
+              'n_bits': 5,
+              'is_signed': true,
+              'scale': {'type_name': 'numpy_float', 'serialized_value': 0.02},
+              'zero_point': 10,
+              'offset': 0,
+            }
+          },
+        ],
+        'output_quantizers': [
+          {
+            'type_name': 'UniformQuantizer',
+            'serialized_value': {
+              'n_bits': 8,
+              'is_signed': true,
+              'scale': {'type_name': 'numpy_float', 'serialized_value': 0.01},
+              'zero_point': 0,
+              'offset': 128,
+            }
+          }
+        ],
+      };
+      final zip = _createZipWithProcessingAndSpecs(proc, _minimalSpecs());
+      final result = ClientZipParser.parse(zip);
+      expect(result.quantParams.input[0].nBits, 3);
+      expect(result.quantParams.input[0].isSigned, isFalse);
+      expect(result.quantParams.input[1].nBits, 5);
+      expect(result.quantParams.input[1].isSigned, isTrue);
+    });
+
+    test('defaults nBits=8 and isSigned=false when fields missing', () {
+      final proc = {
+        'input_quantizers': [
+          {
+            'serialized_value': {
+              'scale': 0.01,
+              'zero_point': 0,
+            }
+          }
+        ],
+        'output_quantizers': [
+          {
+            'serialized_value': {
+              'scale': 0.01,
+              'zero_point': 0,
+              'offset': 0,
+            }
+          }
+        ],
+      };
+      final zip = _createZipWithProcessingAndSpecs(proc, _minimalSpecs());
+      final result = ClientZipParser.parse(zip);
+      expect(result.quantParams.input[0].nBits, 8);
+      expect(result.quantParams.input[0].isSigned, isFalse);
+    });
+
     test('throws if client.specs.json is missing', () {
       final proc = {
         'input_quantizers': [],
