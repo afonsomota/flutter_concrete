@@ -200,12 +200,22 @@ class FheNative {
     } else if (Platform.isAndroid) {
       return DynamicLibrary.open('libfhe_client.so');
     } else if (Platform.isLinux) {
-      return DynamicLibrary.open('libfhe_client.so');
+      return _openWithFallback('libfhe_client.so');
     } else if (Platform.isMacOS) {
-      return DynamicLibrary.open('libfhe_client.dylib');
+      return _openWithFallback('libfhe_client.dylib');
     }
     throw UnsupportedError(
         'FHE native library not supported on ${Platform.operatingSystem}');
+  }
+
+  /// Try the default library name first (works when the env var is set or in
+  /// a Flutter app bundle). Fall back to rust/target/debug/ for `flutter test`.
+  static DynamicLibrary _openWithFallback(String name) {
+    try {
+      return DynamicLibrary.open(name);
+    } on ArgumentError {
+      return DynamicLibrary.open('rust/target/debug/$name');
+    }
   }
 
   /// Generate keys using the given topology.
