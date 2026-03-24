@@ -1,4 +1,4 @@
-/// Integration test for CiphertextFormat.CONCRETE end-to-end flow.
+/// Integration tests for CiphertextFormat.CONCRETE (no backend required).
 ///
 /// Requires:
 ///   1. Native library built: `cd rust && cargo build`
