@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "f969c4d4d25c6692350ebf3b26e519491743e7d01cc8eaaa8a3cb104bd2a68e2",
+  "client_zip_sha256": "a3cd0aae876a8e833498f1cf8753e20fc334a9422a104f1ba42659850eea7b6c",
   "model_class": "XGBRegressor",
   "n_classes": 0,
   "n_features": 4,
@@ -34,6 +34,9 @@
       ],
       "post_processed": [
         0.9383515119552612
+      ],
+      "python_fhe_scores": [
+        0.17123636603355408
       ]
     },
     {
@@ -60,6 +63,9 @@
       ],
       "post_processed": [
         1.1575272679328918
+      ],
+      "python_fhe_scores": [
+        0.3904121220111847
       ]
     },
     {
@@ -86,6 +92,9 @@
       ],
       "post_processed": [
         0.6095878779888153
+      ],
+      "python_fhe_scores": [
+        0.17123636603355408
       ]
     },
     {
@@ -112,6 +121,9 @@
       ],
       "post_processed": [
         1.595878779888153
+      ],
+      "python_fhe_scores": [
+        -0.04793938994407654
       ]
     },
     {
@@ -138,6 +150,9 @@
       ],
       "post_processed": [
         0.9383515119552612
+      ],
+      "python_fhe_scores": [
+        0.3904121220111847
       ]
     }
   ]

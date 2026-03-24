@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "dc8a92b72a4c184e8ba9723258d0bc1aa1ff02117621b5435d8b6ee26b857f2e",
+  "client_zip_sha256": "322ce7c98b2e6130919304177f41eaa7c7e48e6e215f48e15d1368084644f4f1",
   "model_class": "RandomForestRegressor",
   "n_classes": 0,
   "n_features": 4,
@@ -36,6 +36,9 @@
       ],
       "post_processed": [
         1.6209003925323486
+      ],
+      "python_fhe_scores": [
+        0.3602000872294108
       ]
     },
     {
@@ -64,6 +67,9 @@
       ],
       "post_processed": [
         0.3602000872294108
+      ],
+      "python_fhe_scores": [
+        0.1801000436147054
       ]
     },
     {
@@ -92,6 +98,9 @@
       ],
       "post_processed": [
         1.9811004797617595
+      ],
+      "python_fhe_scores": [
+        0.1801000436147054
       ]
     },
     {
@@ -120,6 +129,9 @@
       ],
       "post_processed": [
         1.4408003489176433
+      ],
+      "python_fhe_scores": [
+        0.1801000436147054
       ]
     },
     {
@@ -148,6 +160,9 @@
       ],
       "post_processed": [
         0.9005002180735271
+      ],
+      "python_fhe_scores": [
+        0.3602000872294108
       ]
     }
   ]

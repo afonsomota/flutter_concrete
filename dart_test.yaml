@@ -3,3 +3,7 @@ tags:
     description: "Tests requiring the native libfhe_client library"
   equivalence:
     description: "Tests that test the equivalence of the Python client and flutter_concrete"
+  server_equivalence:
+    description: "Tests that run FHE inference on both Python and Dart clients and compare results"
+  backend:
+    description: "Tests requiring a running backend on localhost:8000"
