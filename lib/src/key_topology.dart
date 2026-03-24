@@ -80,9 +80,12 @@ class KeyTopology {
   ///            input_lwe_dim, output_lwe_dim, variance_bits, ...]
   /// ```
   Uint64List pack() {
-    final size = 1 + secretKeys.length * 2 +
-        1 + bootstrapKeys.length * 8 +
-        1 + keyswitchKeys.length * 7;
+    final size = 1 +
+        secretKeys.length * 2 +
+        1 +
+        bootstrapKeys.length * 8 +
+        1 +
+        keyswitchKeys.length * 7;
     final buf = Uint64List(size);
     int i = 0;
 

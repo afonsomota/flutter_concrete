@@ -1,6 +1,8 @@
 on:
-  push:
-    branches: [main]
+  workflow_call:
+    secrets:
+      PRECOMPILE_PRIVATE_KEY:
+        required: true
 
 name: Precompile Binaries
 

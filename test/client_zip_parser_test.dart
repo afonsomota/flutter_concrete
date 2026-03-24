@@ -11,20 +11,7 @@ void main() {
   late Uint8List zipBytes;
 
   setUpAll(() {
-    // Try absolute path first, then relative paths.
-    final candidates = [
-      '/Users/afonso/Documents/projects/e2ee_journal/journal_app/assets/fhe/client.zip',
-      '${Directory.current.parent.path}/journal_app/assets/fhe/client.zip',
-      '../journal_app/assets/fhe/client.zip',
-    ];
-    for (final path in candidates) {
-      final file = File(path);
-      if (file.existsSync()) {
-        zipBytes = file.readAsBytesSync();
-        return;
-      }
-    }
-    fail('client.zip not found — tried: ${candidates.join(', ')}');
+    zipBytes = File('test/fixtures/client.zip').readAsBytesSync();
   });
 
   group('ClientZipParser', () {
@@ -43,12 +30,18 @@ void main() {
       expect(result.quantParams.output.offset, isA<int>());
     });
 
-    test('parses nClasses from client.specs.json', () {
+    test('parses outputShape from client.specs.json', () {
       final result = ClientZipParser.parse(zipBytes);
-      // CONCRETE format has null tfhers_specs shapes; nClasses comes from
-      // abstractShape instead. For TFHE-rs format, this would be 5.
-      // The current client.zip is CONCRETE format.
-      expect(result.quantParams.nClasses, anyOf(5, isNull));
+      expect(result.outputShape, isNotEmpty);
+      // XGBClassifier with 5 classes: abstractShape should contain 5.
+      expect(result.outputShape.length, greaterThanOrEqualTo(2));
+    });
+
+    test('parses modelClassName from model_type in serialized_processing.json',
+        () {
+      final result = ClientZipParser.parse(zipBytes);
+      // The real client.zip is compiled from XGBClassifier.
+      expect(result.modelClassName, 'XGBClassifier');
     });
 
     test('accepts non-8-bit quantization', () {
@@ -93,7 +86,10 @@ void main() {
               'n_bits': 8,
               'is_signed': false,
               'scale': {'type_name': 'numpy_float', 'serialized_value': 0.01},
-              'zero_point': {'type_name': 'numpy_integer', 'serialized_value': 42},
+              'zero_point': {
+                'type_name': 'numpy_integer',
+                'serialized_value': 42
+              },
               'offset': 0,
             }
           }
@@ -235,7 +231,7 @@ Uint8List _createZipWithProcessing(Map<String, dynamic> processing) {
   final jsonBytes = utf8.encode(jsonEncode(processing));
   archive.addFile(
       ArchiveFile('serialized_processing.json', jsonBytes.length, jsonBytes));
-  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+  return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
 /// Creates a zip with both `serialized_processing.json` and `client.specs.json`.
@@ -246,9 +242,9 @@ Uint8List _createZipWithProcessingAndSpecs(
   archive.addFile(
       ArchiveFile('serialized_processing.json', procBytes.length, procBytes));
   final specsBytes = utf8.encode(jsonEncode(specs));
-  archive.addFile(
-      ArchiveFile('client.specs.json', specsBytes.length, specsBytes));
-  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+  archive
+      .addFile(ArchiveFile('client.specs.json', specsBytes.length, specsBytes));
+  return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
 /// Minimal valid `client.specs.json` for unit tests.

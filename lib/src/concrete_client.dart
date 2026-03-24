@@ -10,13 +10,19 @@ import 'concrete_cipher_info.dart';
 import 'fhe_native.dart';
 import 'key_storage.dart';
 import 'key_topology.dart';
+import 'post_processing.dart';
 import 'quantizer.dart';
 
 const _kClientKeyStorageKey = 'fhe_client_key';
 const _kServerKeyStorageKey = 'fhe_server_key';
 const _kModelHashStorageKey = 'fhe_model_hash';
 
+/// FHE client for Concrete ML models.
+///
+/// Parses a Concrete ML `client.zip`, manages TFHE-rs key generation and
+/// persistence, and provides quantize+encrypt / decrypt+dequantize operations.
 class ConcreteClient {
+  /// Storage key used to persist the model hash for key invalidation.
   static const modelHashStorageKey = _kModelHashStorageKey;
 
   FheNative? _nativeInstance;
@@ -27,23 +33,45 @@ class ConcreteClient {
   CircuitEncoding? _encoding;
   ConcreteCipherInfo? _inputCipherInfo;
   ConcreteCipherInfo? _outputCipherInfo;
+  List<int> _outputShape = const [];
+  String? _modelClassName;
+  PostProcessing? _resolvedPostProcessing;
   Uint8List? _clientKey;
   Uint8List? _serverKey;
   String? _serverKeyB64Cache;
   bool _isReady = false;
 
+  /// Whether [setup] has completed successfully.
   bool get isReady => _isReady;
 
+  /// Model class name from `client.zip` (e.g. `"XGBClassifier"`).
+  /// Available after [setup].
+  String? get modelClassName {
+    _requireReady();
+    return _modelClassName;
+  }
+
+  /// The post-processing variant resolved from [modelClassName] at setup time.
+  /// Available after [setup].
+  PostProcessing get detectedPostProcessing {
+    _requireReady();
+    return _resolvedPostProcessing!;
+  }
+
+  /// The serialized evaluation (server) key. Upload this to the backend.
   Uint8List get serverKey {
     _requireReady();
     return _serverKey!;
   }
 
+  /// Base64-encoded evaluation key, cached after first access.
   String get serverKeyBase64 {
     _requireReady();
     return _serverKeyB64Cache ??= base64Encode(_serverKey!);
   }
 
+  /// Initialize the client: parse [clientZipBytes], generate or restore keys
+  /// via [storage], and prepare for encryption/decryption.
   Future<void> setup({
     required Uint8List clientZipBytes,
     required KeyStorage storage,
@@ -57,6 +85,9 @@ class ConcreteClient {
     _encoding = result.encoding;
     _inputCipherInfo = result.inputCipherInfo;
     _outputCipherInfo = result.outputCipherInfo;
+    _outputShape = result.outputShape;
+    _modelClassName = result.modelClassName;
+    _resolvedPostProcessing = resolveAuto(_modelClassName);
 
     // 2. Compute model hash from topology + encoding
     final currentHash = _topology!.computeModelHash(_encoding!);
@@ -95,6 +126,7 @@ class ConcreteClient {
     _isReady = true;
   }
 
+  /// Clear all state. The client must be [setup] again before use.
   void reset() {
     _isReady = false;
     _quantParams = null;
@@ -102,12 +134,16 @@ class ConcreteClient {
     _encoding = null;
     _inputCipherInfo = null;
     _outputCipherInfo = null;
+    _outputShape = const [];
+    _modelClassName = null;
+    _resolvedPostProcessing = null;
     _clientKey = null;
     _serverKey = null;
     _serverKeyB64Cache = null;
     _nativeInstance = null;
   }
 
+  /// Quantize a float feature vector and encrypt it for server-side FHE inference.
   Uint8List quantizeAndEncrypt(Float32List features) {
     _requireReady();
     final quantized = _quantParams!.quantizeInputs(features);
@@ -120,27 +156,47 @@ class ConcreteClient {
       }
       // Concrete LWE path: seeded encrypt → serialize as Value
       final ct = _native.lweEncryptSeeded(
-        _clientKey!, quantized,
-        info.encodingWidth, info.lweDimension, info.variance,
+        _clientKey!,
+        quantized,
+        info.encodingWidth,
+        info.lweDimension,
+        info.variance,
       );
       return _native.serializeValue(
-        ct, info.concreteShape, info.abstractShape,
-        info.encodingWidth, info.encodingIsSigned,
-        info.lweDimension, info.keyId, info.variance,
+        ct,
+        info.concreteShape,
+        info.abstractShape,
+        info.encodingWidth,
+        info.encodingIsSigned,
+        info.lweDimension,
+        info.keyId,
+        info.variance,
         info.compression == ConcreteCipherCompression.seed ? 1 : 0,
       );
     }
 
     // TFHE-rs path (existing)
     return _native.encrypt(
-      _clientKey!, quantized,
-      _encoding!.tfheInputBitWidth, _encoding!.inputIsSigned,
+      _clientKey!,
+      quantized,
+      _encoding!.tfheInputBitWidth,
+      _encoding!.inputIsSigned,
     );
   }
 
-  Float64List decryptAndDequantize(Uint8List ciphertext) {
+  /// Decrypt an FHE result ciphertext, dequantize, and apply post-processing.
+  ///
+  /// By default uses [PostProcessing.auto], which resolves from the model
+  /// class name in `client.zip`. Pass an explicit variant to override.
+  ///
+  /// See [PostProcessing] for available variants and their behavior.
+  Float64List decryptAndDequantize(
+    Uint8List ciphertext, {
+    PostProcessing postProcessing = const PostProcessing.auto(),
+  }) {
     _requireReady();
 
+    Int64List rawScores;
     if (_outputCipherInfo != null) {
       final info = _outputCipherInfo!;
       if (!info.isNativeMode) {
@@ -149,19 +205,32 @@ class ConcreteClient {
       }
       // Concrete LWE path: deserialize Value → full decrypt
       final (ctData, nCts) = _native.deserializeValue(ciphertext);
-      final rawScores = _native.lweDecryptFull(
-        _clientKey!, ctData,
-        nCts, info.encodingWidth, info.encodingIsSigned, info.lweDimension,
+      rawScores = _native.lweDecryptFull(
+        _clientKey!,
+        ctData,
+        nCts,
+        info.encodingWidth,
+        info.encodingIsSigned,
+        info.lweDimension,
       );
-      return _quantParams!.dequantizeOutputs(rawScores);
+    } else {
+      // TFHE-rs path
+      rawScores = _native.decrypt(
+        _clientKey!,
+        ciphertext,
+        _encoding!.tfheOutputBitWidth,
+        _encoding!.outputIsSigned,
+      );
     }
 
-    // TFHE-rs path (existing)
-    final rawScores = _native.decrypt(
-      _clientKey!, ciphertext,
-      _encoding!.tfheOutputBitWidth, _encoding!.outputIsSigned,
-    );
-    return _quantParams!.dequantizeOutputs(rawScores);
+    // Dequantize (element-wise).
+    final dequantized = _quantParams!.dequantizeOutputs(rawScores);
+
+    // Apply post-processing.
+    final pp = postProcessing is AutoPostProcessing
+        ? _resolvedPostProcessing!
+        : postProcessing;
+    return pp.apply(dequantized, _outputShape);
   }
 
   void _requireReady() {

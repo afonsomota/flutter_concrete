@@ -14,17 +14,22 @@ void main() {
         ],
         bootstrapKeys: [
           BootstrapKeySpec(
-            inputId: 1, outputId: 0,
-            levelCount: 1, baseLog: 23,
-            glweDimension: 4, polynomialSize: 512,
+            inputId: 1,
+            outputId: 0,
+            levelCount: 1,
+            baseLog: 23,
+            glweDimension: 4,
+            polynomialSize: 512,
             inputLweDimension: 599,
             variance: 8.442253112932959e-31,
           ),
         ],
         keyswitchKeys: [
           KeyswitchKeySpec(
-            inputId: 0, outputId: 1,
-            levelCount: 3, baseLog: 3,
+            inputId: 0,
+            outputId: 1,
+            levelCount: 3,
+            baseLog: 3,
             inputLweDimension: 2048,
             outputLweDimension: 599,
             variance: 2.207703775750815e-08,
@@ -64,9 +69,12 @@ void main() {
         ],
         bootstrapKeys: [
           BootstrapKeySpec(
-            inputId: 1, outputId: 0,
-            levelCount: 1, baseLog: 23,
-            glweDimension: 4, polynomialSize: 512,
+            inputId: 1,
+            outputId: 0,
+            levelCount: 1,
+            baseLog: 23,
+            glweDimension: 4,
+            polynomialSize: 512,
             inputLweDimension: 599,
             variance: variance,
           ),
@@ -84,8 +92,10 @@ void main() {
 
   group('KeyTopology.computeModelHash', () {
     final encoding = CircuitEncoding(
-      inputWidth: 10, inputIsSigned: false,
-      outputWidth: 8, outputIsSigned: true,
+      inputWidth: 10,
+      inputIsSigned: false,
+      outputWidth: 8,
+      outputIsSigned: true,
     );
 
     test('returns consistent hash for same topology + encoding', () {
@@ -94,7 +104,8 @@ void main() {
         bootstrapKeys: [],
         keyswitchKeys: [],
       );
-      expect(topology.computeModelHash(encoding), topology.computeModelHash(encoding));
+      expect(topology.computeModelHash(encoding),
+          topology.computeModelHash(encoding));
     });
 
     test('changes when topology changes', () {
@@ -108,7 +119,8 @@ void main() {
         bootstrapKeys: [],
         keyswitchKeys: [],
       );
-      expect(t1.computeModelHash(encoding), isNot(t2.computeModelHash(encoding)));
+      expect(
+          t1.computeModelHash(encoding), isNot(t2.computeModelHash(encoding)));
     });
 
     test('changes when encoding changes', () {
@@ -118,10 +130,13 @@ void main() {
         keyswitchKeys: [],
       );
       final enc2 = CircuitEncoding(
-        inputWidth: 16, inputIsSigned: false,
-        outputWidth: 8, outputIsSigned: true,
+        inputWidth: 16,
+        inputIsSigned: false,
+        outputWidth: 8,
+        outputIsSigned: true,
       );
-      expect(topology.computeModelHash(encoding), isNot(topology.computeModelHash(enc2)));
+      expect(topology.computeModelHash(encoding),
+          isNot(topology.computeModelHash(enc2)));
     });
   });
 }
