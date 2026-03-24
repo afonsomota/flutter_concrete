@@ -3,8 +3,11 @@
 Generate test fixtures for flutter_concrete equivalence tests.
 
 Trains 8 tiny Concrete ML models, compiles each to FHE, and produces
-client.zip + reference.json per model. Each model is processed in a
-separate subprocess to avoid LLVM/memory issues with Concrete's compiler.
+client.zip + server.zip + reference.json per model. Each model is processed
+in a separate subprocess to avoid LLVM/memory issues with Concrete's compiler.
+
+reference.json includes python_fhe_scores: the full Python FHE round-trip
+result (encrypt → server.run → decrypt) for each test vector.
 
 Requirements: concrete-ml == 1.9.0
 """
@@ -98,7 +101,7 @@ import numpy as np
 import concrete.ml
 assert concrete.ml.__version__ == "1.9.0"
 
-from concrete.ml.deployment import FHEModelClient, FHEModelDev
+from concrete.ml.deployment import FHEModelClient, FHEModelDev, FHEModelServer
 from concrete.ml.sklearn import (
     DecisionTreeClassifier, LinearRegression, LogisticRegression,
     RandomForestClassifier, RandomForestRegressor,
@@ -251,11 +254,16 @@ def process_model(model_name, config, base_dir):
     dev.save()
     print("  Saved FHE model")
 
-    # Copy client.zip to fixture directory
+    # Copy client.zip and server.zip to fixture directory
     client_zip_src = fhe_dir / "client.zip"
     client_zip_dst = out_dir / "client.zip"
     shutil.copy(client_zip_src, client_zip_dst)
     print(f"  Copied client.zip ({client_zip_dst.stat().st_size} bytes)")
+
+    server_zip_src = fhe_dir / "server.zip"
+    server_zip_dst = out_dir / "server.zip"
+    shutil.copy(server_zip_src, server_zip_dst)
+    print(f"  Copied server.zip ({server_zip_dst.stat().st_size} bytes)")
 
     # Load client for reference computations
     client = FHEModelClient(path_dir=str(fhe_dir))
@@ -327,6 +335,22 @@ def process_model(model_name, config, base_dir):
             "post_processed": post_processed,
         })
 
+    # Full FHE round-trip: encrypt → server.run → decrypt for each test vector
+    print("  Running FHE round-trip for each test vector...")
+    server = FHEModelServer(path_dir=str(fhe_dir))
+    server.load()
+    eval_keys = client.get_serialized_evaluation_keys()
+
+    for i, vec in enumerate(test_vectors):
+        x = np.array(vec["input_float"], dtype=np.float32).reshape(1, -1)
+        encrypted = client.quantize_encrypt_serialize(x)
+        encrypted_result = server.run(encrypted, eval_keys)
+        if isinstance(encrypted_result, tuple):
+            encrypted_result = encrypted_result[0]
+        result = client.deserialize_decrypt_dequantize(encrypted_result)
+        vec["python_fhe_scores"] = np.array(result).flatten().tolist()
+        print(f"  Vector {i} ({vec['description']}): FHE scores = {vec['python_fhe_scores']}")
+
     # Build reference.json
     reference = {
         "concrete_ml_version": concrete.ml.__version__,
@@ -342,7 +366,7 @@ def process_model(model_name, config, base_dir):
     ref_path.write_text(json.dumps(reference, indent=2))
     print(f"  Wrote {ref_path}")
 
-    # Cleanup fhe_model directory (only keep client.zip + reference.json)
+    # Cleanup fhe_model directory (keep client.zip + server.zip + reference.json)
     shutil.rmtree(fhe_dir)
     print("  Cleaned up fhe_model/")
 
