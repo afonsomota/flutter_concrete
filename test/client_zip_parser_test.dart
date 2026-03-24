@@ -11,20 +11,7 @@ void main() {
   late Uint8List zipBytes;
 
   setUpAll(() {
-    // Try absolute path first, then relative paths.
-    final candidates = [
-      '/Users/afonso/Documents/projects/e2ee_journal/journal_app/assets/fhe/client.zip',
-      '${Directory.current.parent.path}/journal_app/assets/fhe/client.zip',
-      '../journal_app/assets/fhe/client.zip',
-    ];
-    for (final path in candidates) {
-      final file = File(path);
-      if (file.existsSync()) {
-        zipBytes = file.readAsBytesSync();
-        return;
-      }
-    }
-    fail('client.zip not found — tried: ${candidates.join(', ')}');
+    zipBytes = File('test/fixtures/client.zip').readAsBytesSync();
   });
 
   group('ClientZipParser', () {

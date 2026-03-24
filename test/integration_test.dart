@@ -24,19 +24,8 @@ void main() {
   late FheNative native;
 
   setUpAll(() {
-    final candidates = [
-      '${Directory.current.parent.path}/journal_app/assets/fhe/client.zip',
-      '../journal_app/assets/fhe/client.zip',
-    ];
-    for (final path in candidates) {
-      final file = File(path);
-      if (file.existsSync()) {
-        clientZipBytes = file.readAsBytesSync();
-        native = FheNative();
-        return;
-      }
-    }
-    fail('client.zip not found');
+    clientZipBytes = File('test/fixtures/client.zip').readAsBytesSync();
+    native = FheNative();
   });
 
   test('parses CONCRETE format ConcreteCipherInfo from client.zip', () {
