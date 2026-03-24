@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "c81fa45b46bbb4a131acb3c03ae952b7781db2bb663359bacbf5b1ce2223882f",
+  "client_zip_sha256": "dfa1e4f110aa96528c3dda3323f0c3734fbf7f4c9dcbfe17ee109de9c7d05a6c",
   "model_class": "LogisticRegression",
   "n_classes": 3,
   "n_features": 5,

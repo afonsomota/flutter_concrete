@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "6e55db31641ac94f9f1f03eccfd8dbea432b85a9de74f35991f2938ec34db122",
+  "client_zip_sha256": "d88a2fb03b3d00673807e250c2df94ea85e079c12ae9a2307032bc0b14e136cd",
   "model_class": "LinearRegression",
   "n_classes": 0,
   "n_features": 3,

@@ -277,24 +277,39 @@ def process_model(model_name, config, base_dir):
         q_input = client.model.quantize_input(x_2d)
         q_input_flat = q_input.flatten().tolist()
 
-        # Reshape raw ints to match the output shape for dequantization
-        # output_shape includes batch dim, e.g. [1, 4, 3]
-        if output_shape:
-            raw_ints_shaped = raw_ints.reshape(output_shape)
+        # Dequantize using Dart's formula: (raw + offset - zp) * scale
+        # This matches what flutter_concrete's dequantizeOutputs() computes.
+        # Python's client.model.dequantize_output() does NOT apply offset
+        # (offset is handled at encryption/decryption layer), but Dart's
+        # lweDecryptFull returns values that still need offset adjustment.
+        # The raw_output_ints represent Dart-side raw decrypted values.
+        oq = client.model.output_quantizers[0]
+        oq_scale = float(oq.scale)
+        oq_zp = oq.zero_point
+        oq_offset = int(oq.offset) if hasattr(oq, 'offset') else 0
+
+        raw_flat = raw_ints.flatten()
+        if hasattr(oq_zp, '__len__'):
+            # Per-class zero points
+            zp_list = np.array(oq_zp).flatten()
+            dequantized_flat = [
+                float((int(r) + oq_offset - int(zp_list[j % len(zp_list)])) * oq_scale)
+                for j, r in enumerate(raw_flat)
+            ]
         else:
-            raw_ints_shaped = raw_ints.reshape(1, -1)
+            zp = int(oq_zp)
+            dequantized_flat = [
+                float((int(r) + oq_offset - zp) * oq_scale)
+                for r in raw_flat
+            ]
 
-        # Dequantize output
+        # Post-processing on dequantized values
         try:
-            dequantized = client.model.dequantize_output(raw_ints_shaped)
-            dequantized_flat = dequantized.flatten().tolist()
-        except Exception as e:
-            print(f"  WARNING: dequantize_output failed: {e}")
-            dequantized_flat = raw_ints.flatten().astype(float).tolist()
-
-        # Post-processing: MUST pass in correct shape (not flattened)
-        try:
-            deq_shaped = np.array(dequantized_flat).reshape(output_shape) if output_shape else np.array(dequantized_flat).reshape(1, -1)
+            deq_shaped = np.array(dequantized_flat)
+            if output_shape:
+                deq_shaped = deq_shaped.reshape(output_shape)
+            else:
+                deq_shaped = deq_shaped.reshape(1, -1)
             post_processed = client.model.post_processing(deq_shaped)
             post_processed = np.array(post_processed).flatten().tolist()
         except Exception as e:

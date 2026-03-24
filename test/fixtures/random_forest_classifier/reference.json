@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "e18e027cb9ca5c3c27b8a8627844502744f7fc038fb453c87c225cdf297dc2be",
+  "client_zip_sha256": "84fb4c9fbf0595a360b09cc1ba3790b5a67e53ce8e4ccf19b04cede21d8dc92b",
   "model_class": "RandomForestClassifier",
   "n_classes": 3,
   "n_features": 5,

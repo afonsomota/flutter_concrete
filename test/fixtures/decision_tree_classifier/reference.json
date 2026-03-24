@@ -1,6 +1,6 @@
 {
   "concrete_ml_version": "1.9.0",
-  "client_zip_sha256": "1de1fa0c2a301d031cf975f0368462b60fc986717ddd9e70a79ca99dbf4ae922",
+  "client_zip_sha256": "b6de21a4423744bd350c046585b4ec19c0c98f4cd4057091dc9718d875fdad12",
   "model_class": "DecisionTreeClassifier",
   "n_classes": 3,
   "n_features": 4,
