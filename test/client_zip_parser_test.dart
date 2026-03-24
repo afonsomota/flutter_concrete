@@ -244,7 +244,7 @@ Uint8List _createZipWithProcessing(Map<String, dynamic> processing) {
   final jsonBytes = utf8.encode(jsonEncode(processing));
   archive.addFile(
       ArchiveFile('serialized_processing.json', jsonBytes.length, jsonBytes));
-  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+  return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
 /// Creates a zip with both `serialized_processing.json` and `client.specs.json`.
@@ -257,7 +257,7 @@ Uint8List _createZipWithProcessingAndSpecs(
   final specsBytes = utf8.encode(jsonEncode(specs));
   archive
       .addFile(ArchiveFile('client.specs.json', specsBytes.length, specsBytes));
-  return Uint8List.fromList(ZipEncoder().encode(archive)!);
+  return Uint8List.fromList(ZipEncoder().encode(archive));
 }
 
 /// Minimal valid `client.specs.json` for unit tests.

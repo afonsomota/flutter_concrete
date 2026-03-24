@@ -1,5 +1,3 @@
-@Tags(['integration'])
-
 /// Integration test for CiphertextFormat.CONCRETE end-to-end flow.
 ///
 /// Requires:
@@ -9,6 +7,8 @@
 ///
 /// Run with:
 ///   LD_LIBRARY_PATH=rust/target/debug flutter test test/integration_test.dart
+@Tags(['integration'])
+library;
 
 import 'dart:convert';
 import 'dart:io';
