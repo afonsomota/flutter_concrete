@@ -343,7 +343,7 @@ pub unsafe extern "C" fn fhe_keygen(
         let (glwe_dim, poly_size) = topo.bsks.iter()
             .find(|bsk| bsk.output_id == sk0_id)
             .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
-            .unwrap_or((1, 2048)); // Pure LWE circuit (no BSKs) — use default V0_10 GLWE params
+            .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
 
         // Find the KSK from SK[0] to determine the small LWE dimension
         let small_lwe_dim = topo.ksks.iter()
