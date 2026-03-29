@@ -1,0 +1,18 @@
+# docker-compose.ci-test.yml
+#
+# Locally reproduce the CI server-equivalence-test job.
+#
+# Usage:
+#   docker compose -f docker-compose.ci-test.yml up --build
+#
+# To regenerate fixtures instead:
+#   docker compose -f docker-compose.ci-test.yml run --rm ci-test \
+#     bash -c "cd test/fixtures && python3 generate_models.py"
+
+services:
+  ci-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.ci-test
+    environment:
+      - LD_LIBRARY_PATH=/app/rust/target/debug

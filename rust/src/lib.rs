@@ -343,7 +343,7 @@ pub unsafe extern "C" fn fhe_keygen(
         let (glwe_dim, poly_size) = topo.bsks.iter()
             .find(|bsk| bsk.output_id == sk0_id)
             .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
-            .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
+            .unwrap_or((1, 2048)); // Pure LWE circuit (no BSKs) — use default V0_10 GLWE params
 
         // Find the KSK from SK[0] to determine the small LWE dimension
         let small_lwe_dim = topo.ksks.iter()
@@ -567,7 +567,7 @@ pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
         }
 
         // Bit-decompose values into individual bit plaintexts (LSB first)
-        let delta: u64 = 1u64 << 62; // width=1 per-bit encoding
+        let delta: u64 = 1u64 << 63; // width=1 per-bit encoding, delta = 2^(64-width)
         let mut plaintexts: Vec<u64> = Vec::with_capacity(n_cts);
         for &val in vals {
             for bit_idx in 0..width {
@@ -620,7 +620,7 @@ pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
 /// Each ciphertext is `lwe_dimension + 1` u64 values: `[a_0, ..., a_n, b]`.
 /// Decryption: `plaintext = b - <a, s>`
 /// Decoding (round-to-nearest):
-///   `shift = 64 - width - 1`
+///   `shift = 64 - width`
 ///   `decoded = ((plaintext + (1 << (shift-1))) >> shift) & ((1 << width) - 1)`
 ///   if signed and `decoded >= 2^(width-1)`: `decoded -= 2^width`
 ///
@@ -658,7 +658,7 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
         let ct_u64 = slice::from_raw_parts(ct as *const u64, n * ct_size);
         let lwe_sk = extract_lwe_sk(ck);
 
-        let shift = 64 - width - 1;
+        let shift = 64 - width;
         let half: u64 = 1u64 << (shift - 1);
         let mask: u64 = (1u64 << width) - 1;
 

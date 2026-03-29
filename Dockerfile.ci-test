@@ -1,0 +1,74 @@
+# Dockerfile.ci-test
+#
+# Reproduces the CI server-equivalence-test job locally.
+#
+# Usage:
+#   docker compose -f docker-compose.ci-test.yml up --build
+#
+# Or standalone:
+#   docker build -f Dockerfile.ci-test -t flutter-concrete-ci .
+#   docker run --rm flutter-concrete-ci
+#
+# NOTE: First build will be slow (~20-30 min) due to Flutter SDK download,
+# Rust compilation of tfhe-rs, and concrete-ml pip install. Subsequent
+# builds use Docker layer caching.
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ── System packages ───────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    capnproto \
+    clang \
+    cmake \
+    curl \
+    git \
+    libcapnp-dev \
+    libstdc++-12-dev \
+    ninja-build \
+    pkg-config \
+    python3 \
+    python3-pip \
+    unzip \
+    xz-utils \
+    zip \
+  && rm -rf /var/lib/apt/lists/*
+
+# ── Rust toolchain ────────────────────────────────────────────────────────────
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH="/usr/local/cargo/bin:$PATH"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+
+# ── Flutter SDK ───────────────────────────────────────────────────────────────
+ENV FLUTTER_HOME=/usr/local/flutter \
+    PATH="/usr/local/flutter/bin:$PATH"
+RUN git clone --depth 1 --branch stable https://github.com/flutter/flutter.git "$FLUTTER_HOME" \
+  && flutter precache \
+  && flutter config --no-analytics \
+  && dart --disable-analytics
+
+# ── Python dependencies ──────────────────────────────────────────────────────
+COPY test/fixtures/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# ── Copy repo ─────────────────────────────────────────────────────────────────
+WORKDIR /app
+COPY . .
+
+# ── Build native library ─────────────────────────────────────────────────────
+RUN cd rust && cargo build
+
+# ── Flutter pub get ───────────────────────────────────────────────────────────
+RUN flutter pub get
+
+# ── Generate fixtures (if server.zip is missing) ─────────────────────────────
+# The fixtures include pre-generated client.zip/server.zip/reference.json.
+# If they are present (committed to repo), this step is a no-op.
+# If you need to regenerate: docker run --rm flutter-concrete-ci \
+#   bash -c "cd test/fixtures && python3 generate_models.py"
+
+# ── Run tests ─────────────────────────────────────────────────────────────────
+ENV LD_LIBRARY_PATH=/app/rust/target/debug
+CMD ["flutter", "test", "--tags=server_equivalence"]
