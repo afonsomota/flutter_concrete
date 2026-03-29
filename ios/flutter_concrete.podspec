@@ -7,7 +7,7 @@ Pod::Spec.new do |s|
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Afonso Oliveira' => 'af.oliveira.16@gmail.com' }
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*'
+  s.source_files     = 'flutter_concrete/Sources/flutter_concrete/**/*'
 
   s.script_phase = {
     :name => 'Build Rust library',
