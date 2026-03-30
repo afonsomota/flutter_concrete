@@ -1,4 +1,4 @@
-@Tags(['equivalence'])
+@Tags(['integration', 'equivalence'])
 library;
 
 import 'dart:convert';
