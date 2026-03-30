@@ -206,6 +206,21 @@ void testServerEquivalence(String dirName) {
           outputInfo.lweDimension,
         );
 
+        // Compare raw decrypted integers first (isolates decrypt from dequant)
+        final pythonRawDecrypt = vec['python_raw_decrypt'] as List<dynamic>?;
+        // ignore: avoid_print
+        print(
+            '  [$description] nCts=$nCts, encodingWidth=${outputInfo.encodingWidth}, '
+            'signed=${outputInfo.encodingIsSigned}, lweDim=${outputInfo.lweDimension}');
+        // ignore: avoid_print
+        print('  [$description] dart raw=$rawScores');
+        if (pythonRawDecrypt != null) {
+          final pyRaw =
+              pythonRawDecrypt.map((v) => (v as num).toInt()).toList();
+          // ignore: avoid_print
+          print('  [$description] python raw=$pyRaw');
+        }
+
         // Dequantize + post-process (same as ConcreteClient.decryptAndDequantize)
         final dequantized =
             parseResult.quantParams.dequantizeOutputs(rawScores);
@@ -217,6 +232,17 @@ void testServerEquivalence(String dirName) {
 
         final expectedScores =
             pythonFheScores.map((v) => (v as num).toDouble()).toList();
+
+        // ignore: avoid_print
+        print('  [$description] dart dequant=$dequantized');
+        final pythonDeq = vec['python_dequantized'] as List<dynamic>?;
+        if (pythonDeq != null) {
+          // ignore: avoid_print
+          print('  [$description] python dequant=$pythonDeq');
+        }
+        // ignore: avoid_print
+        print(
+            '  [$description] dart final=$dartScores, python final=$expectedScores');
 
         // Compare exact scores (same encryption randomness → same result)
         expect(dartScores.length, expectedScores.length,

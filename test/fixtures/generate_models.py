@@ -365,9 +365,15 @@ def process_model(model_name, config, base_dir):
         if isinstance(encrypted_result, tuple):
             encrypted_result = encrypted_result[0]
         vec["encrypted_result_b64"] = base64.b64encode(encrypted_result).decode()
-        result = client.deserialize_decrypt_dequantize(encrypted_result)
+
+        # Split deserialize_decrypt_dequantize to capture intermediate values
+        raw_quant = client.deserialize_decrypt(encrypted_result)
+        vec["python_raw_decrypt"] = np.array(raw_quant).flatten().tolist()
+        deq = client.model.dequantize_output(raw_quant)
+        vec["python_dequantized"] = np.array(deq).flatten().tolist()
+        result = client.model.post_processing(deq)
         vec["python_fhe_scores"] = np.array(result).flatten().tolist()
-        print(f"  Vector {i} ({vec['description']}): FHE scores = {vec['python_fhe_scores']}")
+        print(f"  Vector {i} ({vec['description']}): raw={vec['python_raw_decrypt']}, scores={vec['python_fhe_scores']}")
 
     # Build reference.json
     reference = {
