@@ -90,6 +90,7 @@ class ClientZipParser {
       input.add(InputQuantParam(
         scale: _extractFloat(sv['scale']),
         zeroPoint: _extractInt(sv['zero_point']),
+        offset: sv.containsKey('offset') ? _extractInt(sv['offset']) : 0,
         nBits: sv.containsKey('n_bits') ? (sv['n_bits'] as num).toInt() : 8,
         isSigned: sv.containsKey('is_signed') ? sv['is_signed'] as bool : false,
       ));

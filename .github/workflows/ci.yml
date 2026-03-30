@@ -53,7 +53,7 @@ jobs:
       - name: Run tests (including integration, excluding backend)
         env:
           LD_LIBRARY_PATH: rust/target/debug
-        run: flutter test --tags=integration --exclude-tags=backend,server_equivalence
+        run: flutter test --tags=integration --exclude-tags=backend,server_equivalence,equivalence
 
   server-equivalence-test:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
@@ -93,7 +93,7 @@ jobs:
       - name: Run server equivalence tests
         env:
           LD_LIBRARY_PATH: rust/target/debug
-        run: flutter test --tags=server_equivalence
+        run: flutter test --tags="server_equivalence || equivalence"
 
   build-android:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'

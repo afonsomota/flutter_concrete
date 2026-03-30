@@ -9,11 +9,13 @@ import 'dart:typed_data';
 class InputQuantParam {
   final double scale;
   final int zeroPoint;
+  final int offset;
   final int nBits;
   final bool isSigned;
   const InputQuantParam({
     required this.scale,
     required this.zeroPoint,
+    this.offset = 0,
     this.nBits = 8,
     this.isSigned = false,
   });
@@ -54,10 +56,13 @@ class QuantizationParams {
 
   /// Quantize float feature vector to Int64List using per-feature input params.
   ///
-  /// Formula: q = round(float / scale) + zero_point, clamped to the range
-  /// determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
+  /// Formula: q = round(float / scale) + zero_point + offset, clamped to the
+  /// range determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
   /// - Unsigned: [0, (1 << nBits) - 1]
   /// - Signed: [-(1 << (nBits - 1)), (1 << (nBits - 1)) - 1]
+  ///
+  /// The offset shifts signed quantized values into the unsigned range
+  /// expected by the FHE circuit.
   Int64List quantizeInputs(Float32List features) {
     assert(
       features.length == input.length || input.length == 1,
@@ -66,7 +71,7 @@ class QuantizationParams {
     final result = Int64List(features.length);
     for (int i = 0; i < features.length; i++) {
       final p = input[i % input.length];
-      final q = (features[i] / p.scale).round() + p.zeroPoint;
+      final q = (features[i] / p.scale).round() + p.zeroPoint + p.offset;
       if (p.isSigned) {
         final minVal = -(1 << (p.nBits - 1));
         final maxVal = (1 << (p.nBits - 1)) - 1;
@@ -81,7 +86,10 @@ class QuantizationParams {
 
   /// Dequantize raw int64 output scores to float64 (element-wise).
   ///
-  /// Formula per element: `float = (raw + offset - zero_point) * scale`.
+  /// Formula per element: `float = (raw - zero_point) * scale`.
+  ///
+  /// The output quantizer's `offset` is NOT applied here — it matches
+  /// Python's `dequantize_output` which does `scale * (raw - zp)`.
   ///
   /// Model-specific post-processing (tree aggregation, softmax, etc.) is
   /// handled separately by [PostProcessing].
@@ -91,7 +99,7 @@ class QuantizationParams {
     final result = Float64List(rawScores.length);
     for (int i = 0; i < rawScores.length; i++) {
       final zp = zps != null ? zps[i % zps.length] : p.zeroPoint;
-      result[i] = (rawScores[i] + p.offset - zp) * p.scale;
+      result[i] = (rawScores[i] - zp) * p.scale;
     }
     return result;
   }

@@ -642,8 +642,10 @@ pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
             ));
         }
 
-        // Bit-decompose values into individual bit plaintexts (LSB first)
-        let delta: u64 = 1u64 << 63; // width=1 per-bit encoding, delta = 2^(64-width)
+        // Bit-decompose values into individual bit plaintexts (LSB first).
+        // Concrete uses carry-bit encoding: delta = 2^(64 - width - 1).
+        // For 1-bit-per-CT encoding, delta = 2^(64 - 1 - 1) = 2^62.
+        let delta: u64 = 1u64 << 62;
         let mut plaintexts: Vec<u64> = Vec::with_capacity(n_cts);
         for &val in vals {
             for bit_idx in 0..width {
@@ -732,9 +734,13 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
         let ct_u64 = slice::from_raw_parts(ct as *const u64, n * ct_size);
         let lwe_sk = extract_lwe_sk_from_bytes(ck_bytes)?;
 
-        let shift = 64 - width;
+        // Concrete uses carry-bit encoding: delta = 2^(64 - width - 1).
+        // The shift extracts width+1 bits (message + carry).  For circuits
+        // whose output exceeds 2^width (e.g. linear regression accumulation),
+        // the carry bit holds meaningful data.
+        let shift = 64 - width - 1;
         let half: u64 = 1u64 << (shift - 1);
-        let mask: u64 = (1u64 << width) - 1;
+        let msg_mask: u64 = (1u64 << width) - 1;
 
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
@@ -749,13 +755,21 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
             }
             let plaintext = b.wrapping_sub(dot);
 
-            // Decode: round-to-nearest
-            let decoded = (plaintext.wrapping_add(half) >> shift) & mask;
+            // Decode: round-to-nearest, extract width+1 bits
+            let raw = (plaintext.wrapping_add(half)) >> shift;
 
-            let value = if signed && decoded >= (1u64 << (width - 1)) {
-                decoded as i64 - (1i64 << width)
+            let value = if signed {
+                // For signed: mask to width bits then sign-extend
+                let masked = raw & msg_mask;
+                if masked >= (1u64 << (width - 1)) {
+                    masked as i64 - (1i64 << width)
+                } else {
+                    masked as i64
+                }
             } else {
-                decoded as i64
+                // For unsigned: keep full decoded value (carry bit
+                // holds overflow from circuit computation)
+                raw as i64
             };
 
             results.push(value);

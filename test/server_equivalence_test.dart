@@ -349,9 +349,14 @@ void testServerEquivalence(String dirName) {
         expect(dartScores.length, expectedScores.length,
             reason: 'Score length mismatch for "$description"');
 
-        // Test B uses a different server compilation + fresh encryption
-        // randomness, so scores may differ significantly.  Just verify
-        // the round-trip produces finite, reasonable values.
+        // ignore: avoid_print
+        print('  B [$description] dart raw=$rawScores');
+        // ignore: avoid_print
+        print('  B [$description] dart=$dartScores python=$expectedScores');
+
+        // Test B uses fresh encryption randomness, so exact scores may
+        // differ.  Check that the round-trip produces finite values and
+        // log for comparison with pre-/post-MLIR compilation.
         for (int i = 0; i < dartScores.length; i++) {
           expect(dartScores[i].isFinite, isTrue,
               reason: 'Non-finite score[$i] for "$description": '
