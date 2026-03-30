@@ -93,7 +93,7 @@ jobs:
       - name: Run server equivalence tests
         env:
           LD_LIBRARY_PATH: rust/target/debug
-        run: flutter test --tags="server_equivalence || equivalence"
+        run: flutter test --tags="server_equivalence || equivalence || cross_client"
 
   build-android:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
