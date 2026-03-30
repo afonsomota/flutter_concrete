@@ -63,7 +63,7 @@ void main() {
       final raw = Int64List.fromList([-1, 0, 1]);
       final result = params.dequantizeOutputs(raw);
       expect(result[0], -0.5);
-      expect(result[1], 0.5);
+      expect(result[1], 0.0);
     });
 
     test('returns element-wise dequantized values without aggregation', () {
