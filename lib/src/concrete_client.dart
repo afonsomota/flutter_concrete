@@ -147,6 +147,10 @@ class ConcreteClient {
   Uint8List quantizeAndEncrypt(Float32List features) {
     _requireReady();
     final quantized = _quantParams!.quantizeInputs(features);
+    // Apply input offsets to shift signed values into the unsigned range
+    // expected by the FHE circuit (Python's fhe.Client.encrypt does this
+    // internally).
+    final shifted = _quantParams!.applyInputOffsets(quantized);
 
     if (_inputCipherInfo != null) {
       final info = _inputCipherInfo!;
@@ -157,7 +161,7 @@ class ConcreteClient {
       // Concrete LWE path: seeded encrypt → serialize as Value
       final ct = _native.lweEncryptSeeded(
         _clientKey!,
-        quantized,
+        shifted,
         info.concreteShape.last,
         info.lweDimension,
         info.variance,

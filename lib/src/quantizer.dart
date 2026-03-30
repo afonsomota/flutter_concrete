@@ -56,13 +56,14 @@ class QuantizationParams {
 
   /// Quantize float feature vector to Int64List using per-feature input params.
   ///
-  /// Formula: q = round(float / scale) + zero_point + offset, clamped to the
-  /// range determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
+  /// Formula: q = round(float / scale) + zero_point, clamped to the range
+  /// determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
   /// - Unsigned: [0, (1 << nBits) - 1]
   /// - Signed: [-(1 << (nBits - 1)), (1 << (nBits - 1)) - 1]
   ///
-  /// The offset shifts signed quantized values into the unsigned range
-  /// expected by the FHE circuit.
+  /// Note: the input offset is NOT applied here (matching Python's
+  /// `quantize_input`).  It must be added separately before encryption
+  /// via [applyInputOffsets].
   Int64List quantizeInputs(Float32List features) {
     assert(
       features.length == input.length || input.length == 1,
@@ -71,7 +72,7 @@ class QuantizationParams {
     final result = Int64List(features.length);
     for (int i = 0; i < features.length; i++) {
       final p = input[i % input.length];
-      final q = (features[i] / p.scale).round() + p.zeroPoint + p.offset;
+      final q = (features[i] / p.scale).round() + p.zeroPoint;
       if (p.isSigned) {
         final minVal = -(1 << (p.nBits - 1));
         final maxVal = (1 << (p.nBits - 1)) - 1;
@@ -80,6 +81,20 @@ class QuantizationParams {
         final maxVal = (1 << p.nBits) - 1;
         result[i] = q.clamp(0, maxVal);
       }
+    }
+    return result;
+  }
+
+  /// Add input offsets to quantized values before encryption.
+  ///
+  /// The offset shifts signed quantized values into the unsigned range
+  /// expected by the FHE circuit.  Python's `fhe.Client.encrypt` does
+  /// this internally; since we use raw LWE encryption, we add it here.
+  Int64List applyInputOffsets(Int64List quantized) {
+    final result = Int64List(quantized.length);
+    for (int i = 0; i < quantized.length; i++) {
+      final p = input[i % input.length];
+      result[i] = quantized[i] + p.offset;
     }
     return result;
   }
