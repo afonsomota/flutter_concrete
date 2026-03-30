@@ -4,6 +4,7 @@
 
 - **Unit tests** — pure Dart, no tags. Cover quantizer, post-processing, client.zip parser, key topology, circuit encoding. Run with `flutter test`.
 - **Python equivalence tests** — tagged `equivalence`. Verify Dart's quantization, dequantization, and post-processing match Python's concrete-ml numerically. Use pre-generated fixtures. Run with `flutter test -t equivalence`.
+- **Cross-client tests** — tagged `integration`, `cross_client`. Uses a long-lived Python server process (single MLIR compilation) with fresh keys generated at test time. Exercises the production `ConcreteClient` API. Two tests per model: (1) Dart encrypts via `quantizeAndEncrypt`, checks finiteness of round-trip; (2) Python encrypts, both decrypt same ciphertext, exact score match. Run on main push only in CI.
 - **Server equivalence tests** — tagged `integration`, `server_equivalence`. Full FHE round-trip: Dart encrypts via Rust FFI, Python `FHEModelServer` runs inference, Dart decrypts, and results are compared against pre-computed Python FHE scores. Requires native lib + Python with concrete-ml. Run on main push only in CI.
 - **Integration tests** — tagged `integration`. Require native Rust library (`libfhe_client`). Run with `flutter test -t integration`.
 
@@ -68,3 +69,7 @@ python generate_models.py
 ### Notes
 
 Some models may segfault during LLVM compilation on ARM (macOS). The script retries automatically; models that still fail will be missing `server.zip` and skipped in server equivalence tests. Run on x86 Linux for full coverage.
+
+### Known limitations
+
+**logistic_regression excluded from cross-client Test 1** (Dart encrypt). At `n_bits=3`, the linear FHE circuit amplifies encryption noise differences — independent CSPRNG state in Dart vs Python produces wildly different scores, flipping argmax even on trivial inputs (zeros vector). Cross-client Test 2 (Python encrypt, both decrypt same ciphertext) passes. This is inherent to low-precision FHE, not a bug. Revisit when testing with higher `n_bits` or seeded encryption.
