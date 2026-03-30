@@ -302,13 +302,13 @@ def process_model(model_name, config, base_dir):
             # Per-class zero points
             zp_list = np.array(oq_zp).flatten()
             dequantized_flat = [
-                float((int(r) + oq_offset - int(zp_list[j % len(zp_list)])) * oq_scale)
+                float((int(r) - int(zp_list[j % len(zp_list)])) * oq_scale)
                 for j, r in enumerate(raw_flat)
             ]
         else:
             zp = int(oq_zp)
             dequantized_flat = [
-                float((int(r) + oq_offset - zp) * oq_scale)
+                float((int(r) - zp) * oq_scale)
                 for r in raw_flat
             ]
 
