@@ -364,6 +364,7 @@ def process_model(model_name, config, base_dir):
         encrypted_result = server.run(encrypted, eval_keys)
         if isinstance(encrypted_result, tuple):
             encrypted_result = encrypted_result[0]
+        vec["encrypted_result_b64"] = base64.b64encode(encrypted_result).decode()
         result = client.deserialize_decrypt_dequantize(encrypted_result)
         vec["python_fhe_scores"] = np.array(result).flatten().tolist()
         print(f"  Vector {i} ({vec['description']}): FHE scores = {vec['python_fhe_scores']}")
