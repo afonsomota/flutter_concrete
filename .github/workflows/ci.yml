@@ -77,6 +77,15 @@ jobs:
           python-version: '3.10'
       - name: Install Python dependencies
         run: pip install -r test/fixtures/requirements.txt
+      - name: Cache test fixtures
+        id: fixture-cache
+        uses: actions/cache@v4
+        with:
+          path: test/fixtures
+          key: fixtures-${{ runner.os }}-${{ hashFiles('test/fixtures/generate_models.py', 'test/fixtures/requirements.txt') }}
+      - name: Generate test fixtures
+        if: steps.fixture-cache.outputs.cache-hit != 'true'
+        run: python3 test/fixtures/generate_models.py
       - uses: subosito/flutter-action@v2
         with:
           channel: stable

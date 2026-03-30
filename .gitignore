@@ -36,3 +36,11 @@ migrate_working_dir/
 
 CLAUDE.md
 /docs
+
+# Generated test fixtures (machine-specific, regenerated in CI)
+test/fixtures/*/client.zip
+test/fixtures/*/server.zip
+test/fixtures/*/reference.json
+test/fixtures/*/secret_key.bin
+test/fixtures/*/eval_key.bin
+test/fixtures/*/_worker.py
