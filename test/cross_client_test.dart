@@ -219,7 +219,7 @@ void testCrossClient(String dirName) {
         final ctRaw = native.lweEncryptSeeded(
           secretKey,
           quantized,
-          inputInfo.concreteShape.last,
+          inputInfo.encodingWidth,
           inputInfo.lweDimension,
           inputInfo.variance,
         );
