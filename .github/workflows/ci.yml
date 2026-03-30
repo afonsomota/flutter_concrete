@@ -53,7 +53,7 @@ jobs:
       - name: Run tests (including integration, excluding backend)
         env:
           LD_LIBRARY_PATH: rust/target/debug
-        run: flutter test --tags=integration --exclude-tags=backend,server_equivalence,equivalence
+        run: flutter test --tags=integration --exclude-tags=backend,server_equivalence,equivalence,cross_client
 
   server-equivalence-test:
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
