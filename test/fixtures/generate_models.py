@@ -351,6 +351,12 @@ def process_model(model_name, config, base_dir):
         f.write(sk0_bytes)
     print(f"  Saved secret_key.bin ({len(sk0_bytes)} bytes)")
 
+    # Save full serialized keys (needed for cross-language decrypt tests)
+    full_keys_bytes = keys.serialize()
+    with open(str(out_dir / "full_keys.bin"), "wb") as f:
+        f.write(full_keys_bytes)
+    print(f"  Saved full_keys.bin ({len(full_keys_bytes)} bytes)")
+
     # Full FHE round-trip: encrypt → server.run → decrypt for each test vector
     print("  Running FHE round-trip for each test vector...")
     server = FHEModelServer(path_dir=str(fhe_dir))

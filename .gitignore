@@ -43,4 +43,5 @@ test/fixtures/*/server.zip
 test/fixtures/*/reference.json
 test/fixtures/*/secret_key.bin
 test/fixtures/*/eval_key.bin
+test/fixtures/*/full_keys.bin
 test/fixtures/*/_worker.py

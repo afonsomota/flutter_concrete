@@ -111,6 +111,36 @@ typedef _FheLweDecryptFullDart = int Function(
     Pointer<Pointer<Int64>>,
     Pointer<Size>);
 
+// int32_t fhe_lwe_decrypt_seeded(
+//     const uint8_t *ck, size_t ck_len,
+//     const uint8_t *ct, size_t ct_len,
+//     uint32_t n_vals,
+//     uint32_t encoding_width, uint32_t is_signed,
+//     uint32_t lwe_dimension,
+//     int64_t **out, size_t *out_len)
+typedef _FheLweDecryptSeededC = Int32 Function(
+    Pointer<Uint8>,
+    Size,
+    Pointer<Uint8>,
+    Size,
+    Uint32,
+    Uint32,
+    Uint32,
+    Uint32,
+    Pointer<Pointer<Int64>>,
+    Pointer<Size>);
+typedef _FheLweDecryptSeededDart = int Function(
+    Pointer<Uint8>,
+    int,
+    Pointer<Uint8>,
+    int,
+    int,
+    int,
+    int,
+    int,
+    Pointer<Pointer<Int64>>,
+    Pointer<Size>);
+
 // int32_t fhe_serialize_value(
 //     const uint8_t *ct_data, size_t ct_len,
 //     const uint32_t *shape, size_t shape_len,
@@ -169,6 +199,7 @@ class FheNative {
   late final _FheFreeI64Dart _freeI64Buf;
   late final _FheLweEncryptSeededDart _lweEncryptSeeded;
   late final _FheLweDecryptFullDart _lweDecryptFull;
+  late final _FheLweDecryptSeededDart _lweDecryptSeeded;
   late final _FheSerializeValueDart _serializeValue;
   late final _FheDeserializeValueDart _deserializeValue;
 
@@ -186,6 +217,9 @@ class FheNative {
     _lweDecryptFull =
         lib.lookupFunction<_FheLweDecryptFullC, _FheLweDecryptFullDart>(
             'fhe_lwe_decrypt_full');
+    _lweDecryptSeeded =
+        lib.lookupFunction<_FheLweDecryptSeededC, _FheLweDecryptSeededDart>(
+            'fhe_lwe_decrypt_seeded');
     _serializeValue =
         lib.lookupFunction<_FheSerializeValueC, _FheSerializeValueDart>(
             'fhe_serialize_value');
@@ -346,6 +380,47 @@ class FheNative {
           outPtrPtr,
           outLen);
       if (rc != 0) throw StateError('fhe_lwe_decrypt_full failed (code $rc)');
+      final len = outLen.value;
+      final result = Int64List(len);
+      for (int i = 0; i < len; i++) {
+        result[i] = outPtrPtr.value[i];
+      }
+      _freeI64Buf(outPtrPtr.value, len);
+      return result;
+    } finally {
+      malloc.free(ckPtr);
+      malloc.free(ctPtr);
+      malloc.free(outPtrPtr);
+      malloc.free(outLen);
+    }
+  }
+
+  /// Decrypt seeded LWE ciphertexts (seed+body format from [lweEncryptSeeded]).
+  ///
+  /// Internally expands the seed, decrypts individual bit-CTs, and reassembles
+  /// bits back into values. [nVals] is the number of original values.
+  /// [bitsPerValue] must match the value passed to [lweEncryptSeeded].
+  Int64List lweDecryptSeeded(Uint8List clientKey, Uint8List ciphertext,
+      int nVals, int bitsPerValue, bool isSigned, int lweDimension) {
+    final ckPtr = _toNativeUint8(clientKey);
+    final ctPtr = _toNativeUint8(ciphertext);
+    final outPtrPtr = malloc<Pointer<Int64>>();
+    final outLen = malloc<Size>();
+    try {
+      final rc = _lweDecryptSeeded(
+          ckPtr,
+          clientKey.length,
+          ctPtr,
+          ciphertext.length,
+          nVals,
+          bitsPerValue,
+          isSigned ? 1 : 0,
+          lweDimension,
+          outPtrPtr,
+          outLen);
+      if (rc != 0) {
+        throw StateError('fhe_lwe_decrypt_seeded failed (code $rc)');
+      }
       final len = outLen.value;
       final result = Int64List(len);
       for (int i = 0; i < len; i++) {

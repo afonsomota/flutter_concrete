@@ -787,6 +787,124 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
     }
 }
 
+/// Decrypt seeded LWE ciphertexts (seed + body format from `fhe_lwe_encrypt_seeded`).
+///
+/// Internally decompresses the seeded ciphertexts into full LWE ciphertexts,
+/// decrypts individual bit-ciphertexts, and reassembles bits back into values.
+///
+/// `ct`: `[seed_16bytes || b_0, b_1, ..., b_{n_cts-1}]`
+/// `n_vals`: number of original values
+/// `bits_per_value`: number of bit-ciphertexts per value (same as passed to encrypt)
+/// `is_signed`: if nonzero, sign-extends from `bits_per_value` bits
+///
+/// Returns `n_vals` reassembled integer values.
+///
+/// # Safety
+/// `ct` must point to `16 + n_vals * bits_per_value * 8` bytes.
+/// Free output with `fhe_free_i64_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn fhe_lwe_decrypt_seeded(
+    client_key: *const u8, client_key_len: usize,
+    ct: *const u8, ct_len: usize,
+    n_vals: u32,
+    bits_per_value: u32, is_signed: u32,
+    lwe_dimension: u32,
+    scores_out: *mut *mut i64, scores_len: *mut usize,
+) -> i32 {
+    match panic::catch_unwind(|| -> Result<(), String> {
+        let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
+        let ct_bytes = slice::from_raw_parts(ct, ct_len);
+
+        let bpv = bits_per_value as usize;
+        let lwe_dim = lwe_dimension as usize;
+        let signed = is_signed != 0;
+        let n = n_vals as usize;
+        let n_cts = n * bpv;
+
+        let expected = 16 + n_cts * 8;
+        if ct_len != expected {
+            return Err(format!(
+                "ct_len {} != expected {} (16 + {}*{}*8)",
+                ct_len, expected, n, bpv
+            ));
+        }
+
+        // Extract seed and body values
+        let seed_bytes: [u8; 16] = ct_bytes[0..16].try_into().unwrap();
+        let seed = tfhe::core_crypto::commons::math::random::CompressionSeed {
+            seed: tfhe::core_crypto::commons::math::random::Seed(
+                u128::from_le_bytes(seed_bytes)),
+        };
+        let b_values: Vec<u64> = bytemuck::cast_slice::<u8, u64>(&ct_bytes[16..]).to_vec();
+
+        // Reconstruct SeededLweCiphertextList and decompress
+        let seeded_list = SeededLweCiphertextList::from_container(
+            b_values,
+            LweDimension(lwe_dim).to_lwe_size(),
+            seed,
+            CiphertextModulus::new_native(),
+        );
+        let mut full_ct_list = LweCiphertextList::new(
+            0u64,
+            LweDimension(lwe_dim).to_lwe_size(),
+            LweCiphertextCount(n_cts),
+            CiphertextModulus::new_native(),
+        );
+        decompress_seeded_lwe_ciphertext_list::<_, _, _, DefaultRandomGenerator>(
+            &mut full_ct_list, &seeded_list,
+        );
+
+        // Decrypt individual bit-ciphertexts (width=1 per CT, carry-bit encoding)
+        let lwe_sk = extract_lwe_sk_from_bytes(ck_bytes)?;
+        let ct_size = lwe_dim + 1;
+        let ct_u64 = full_ct_list.as_ref();
+
+        // For 1-bit-per-CT: delta = 2^62, shift = 62, half = 2^61
+        let shift: u32 = 62;
+        let half: u64 = 1u64 << (shift - 1);
+
+        let mut bits = Vec::with_capacity(n_cts);
+        for i in 0..n_cts {
+            let base = i * ct_size;
+            let a = &ct_u64[base..base + lwe_dim];
+            let b = ct_u64[base + lwe_dim];
+
+            let mut dot: u64 = 0;
+            for (a_j, s_j) in a.iter().zip(lwe_sk.as_ref().iter()) {
+                dot = dot.wrapping_add(a_j.wrapping_mul(*s_j));
+            }
+            let plaintext = b.wrapping_sub(dot);
+            let bit = (plaintext.wrapping_add(half)) >> shift & 1;
+            bits.push(bit);
+        }
+
+        // Reassemble bits into values (LSB first, matching encrypt)
+        let mut results = Vec::with_capacity(n);
+        for j in 0..n {
+            let mut val: u64 = 0;
+            for k in 0..bpv {
+                val |= bits[j * bpv + k] << k;
+            }
+            let value = if signed && val >= (1u64 << (bpv - 1)) {
+                val as i64 - (1i64 << bpv)
+            } else {
+                val as i64
+            };
+            results.push(value);
+        }
+
+        let len = results.len();
+        let ptr = Box::into_raw(results.into_boxed_slice()) as *mut i64;
+        *scores_out = ptr;
+        *scores_len = len;
+        Ok(())
+    }) {
+        Ok(Ok(())) => 0,
+        Ok(Err(_)) => -1,
+        Err(_) => -2,
+    }
+}
+
 /// Serialize raw ciphertext bytes into a Cap'n Proto Value message.
 ///
 /// `ct_data`: raw bytes (seeded: seed+b-values; full: n_cts*(lwe_dim+1) u64s)
