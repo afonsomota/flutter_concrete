@@ -158,7 +158,9 @@ class ConcreteClient {
         throw UnsupportedError(
             'ConcreteClient: only native encoding mode is supported');
       }
-      // Concrete LWE path: seeded encrypt → serialize as Value
+      // Concrete LWE path: seeded encrypt → serialize as Value.
+      // concreteShape.last = number of bit-ciphertexts per input value,
+      // matching the circuit's expected input shape.
       final ct = _native.lweEncryptSeeded(
         _clientKey!,
         shifted,
