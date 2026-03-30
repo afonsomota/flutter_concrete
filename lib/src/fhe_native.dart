@@ -314,16 +314,8 @@ class FheNative {
     final ctPtrPtr = malloc<Pointer<Uint8>>();
     final ctLen = malloc<Size>();
     try {
-      final rc = _lweEncryptSeeded(
-          ckPtr,
-          clientKey.length,
-          valPtr,
-          values.length,
-          bitsPerValue,
-          lweDimension,
-          variance,
-          ctPtrPtr,
-          ctLen);
+      final rc = _lweEncryptSeeded(ckPtr, clientKey.length, valPtr,
+          values.length, bitsPerValue, lweDimension, variance, ctPtrPtr, ctLen);
       if (rc != 0) throw StateError('fhe_lwe_encrypt_seeded failed (code $rc)');
       return _readAndFree(ctPtrPtr.value, ctLen.value);
     } finally {
