@@ -47,7 +47,8 @@ def main():
             "status": "error",
         }
 
-    print(json.dumps(response))
+    sys.stdout.write(json.dumps(response) + "\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

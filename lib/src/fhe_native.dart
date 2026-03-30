@@ -301,8 +301,11 @@ class FheNative {
   }
 
   /// Encrypt [values] using Concrete's seeded LWE encoding.
+  ///
+  /// [bitsPerValue] is the number of bit-ciphertexts per input value
+  /// (i.e. `concrete_shape[-1]`), NOT the encoding width.
   Uint8List lweEncryptSeeded(Uint8List clientKey, Int64List values,
-      int encodingWidth, int lweDimension, double variance) {
+      int bitsPerValue, int lweDimension, double variance) {
     final ckPtr = _toNativeUint8(clientKey);
     final valPtr = malloc<Int64>(values.length);
     for (int i = 0; i < values.length; i++) {
@@ -316,7 +319,7 @@ class FheNative {
           clientKey.length,
           valPtr,
           values.length,
-          encodingWidth,
+          bitsPerValue,
           lweDimension,
           variance,
           ctPtrPtr,

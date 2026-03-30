@@ -158,7 +158,7 @@ class ConcreteClient {
       final ct = _native.lweEncryptSeeded(
         _clientKey!,
         quantized,
-        info.encodingWidth,
+        info.concreteShape.last,
         info.lweDimension,
         info.variance,
       );

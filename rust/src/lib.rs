@@ -306,6 +306,22 @@ fn write_payload_chunks(
     list.set(0, data);
 }
 
+/// Build a Cap'n Proto ServerKeyset with no BSKs, KSKs, or packing KSKs.
+/// Used for pure-LWE circuits that need no evaluation keys.
+fn build_empty_server_keyset() -> Result<Vec<u8>, String> {
+    let mut message = Builder::new_default();
+    {
+        use concrete_protocol_capnp::server_keyset;
+        let mut keyset = message.init_root::<server_keyset::Builder<'_>>();
+        keyset.reborrow().init_lwe_bootstrap_keys(0);
+        keyset.reborrow().init_lwe_keyswitch_keys(0);
+        keyset.init_packing_keyswitch_keys(0);
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    serialize::write_message(&mut buf, &message).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
 // ── FFI helpers ───────────────────────────────────────────────────────────────
 
 /// Leak a Vec<u8> into a raw pointer/length pair that Dart will free later.
@@ -335,41 +351,65 @@ pub unsafe extern "C" fn fhe_keygen(
     match panic::catch_unwind(|| -> Result<(), String> {
         let topo_data = slice::from_raw_parts(topology_ptr, topology_len);
         let topo = unpack_topology(topo_data)?;
+        if topo.sks.is_empty() {
+            return Err("topology has no secret keys".into());
+        }
 
-        // Derive GLWE parameters from the topology's BSK that outputs SK[0].
-        // SK[0] is the root key — its GLWE dimensions must match what the
-        // Concrete compiler chose, which varies by n_bits and ciphertext format.
-        let sk0_id = topo.sks[0].id;
-        let (glwe_dim, poly_size) = topo.bsks.iter()
-            .find(|bsk| bsk.output_id == sk0_id)
-            .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
-            .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
+        let (ck_buf, sk_buf) = if topo.bsks.is_empty() {
+            // ── Pure LWE circuit (no bootstrapping / keyswitching) ──────────
+            // Generate a raw LWE secret key with the exact dimension from the
+            // topology.  This avoids the GLWE→LWE extraction path which cannot
+            // produce prime-sized dimensions like 629 or 761.
+            let sk0_dim = topo.sks[0].dim as usize;
+            let mut seeder = new_seeder();
+            let mut sec_gen = SecretRandomGenerator::<DefaultRandomGenerator>::new(
+                seeder.as_mut().seed(),
+            );
+            let lwe_sk = allocate_and_generate_new_binary_lwe_secret_key(
+                LweDimension(sk0_dim),
+                &mut sec_gen,
+            );
 
-        // Find the KSK from SK[0] to determine the small LWE dimension
-        let small_lwe_dim = topo.ksks.iter()
-            .find(|ksk| ksk.input_id == sk0_id)
-            .map(|ksk| ksk.output_lwe_dim as usize)
-            .unwrap_or(topo.sks.get(1).map(|s| s.dim as usize).unwrap_or(834));
+            // Serialize: "LWEK" magic (4 bytes) + LWE dimension (8 bytes LE) + key data
+            let key_container: &[u64] = lwe_sk.as_ref();
+            let key_bytes = bincode::serialize(key_container)
+                .map_err(|e| e.to_string())?;
+            let mut ck_buf = Vec::with_capacity(4 + 8 + key_bytes.len());
+            ck_buf.extend_from_slice(b"LWEK");
+            ck_buf.extend_from_slice(&(sk0_dim as u64).to_le_bytes());
+            ck_buf.extend_from_slice(&key_bytes);
 
-        // Build parameters matching the topology. Start from V0_10 as a
-        // template (for noise distributions, message/carry modulus, etc.)
-        // and override the GLWE/LWE dimensions to match the compiler's choice.
-        let mut params = V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64;
-        params.glwe_dimension = GlweDimension(glwe_dim);
-        params.polynomial_size = PolynomialSize(poly_size);
-        params.lwe_dimension = LweDimension(small_lwe_dim);
+            let sk_buf = build_empty_server_keyset()?;
+            (ck_buf, sk_buf)
+        } else {
+            // ── Standard path (has BSKs → GLWE-based keygen) ───────────────
+            let sk0_id = topo.sks[0].id;
+            let (glwe_dim, poly_size) = topo.bsks.iter()
+                .find(|bsk| bsk.output_id == sk0_id)
+                .map(|bsk| (bsk.glwe_dim as usize, bsk.poly_size as usize))
+                .ok_or_else(|| "No BSK outputs SK[0] — cannot determine GLWE params".to_string())?;
 
-        let config = ConfigBuilder::default()
-            .use_custom_parameters(params)
-            .build();
-        let (client_key, _server_key) = tfhe::generate_keys(config);
+            let small_lwe_dim = topo.ksks.iter()
+                .find(|ksk| ksk.input_id == sk0_id)
+                .map(|ksk| ksk.output_lwe_dim as usize)
+                .unwrap_or(topo.sks.get(1).map(|s| s.dim as usize).unwrap_or(834));
 
-        // Serialise client key
-        let mut ck_buf = Vec::new();
-        safe_serialize(&client_key, &mut ck_buf, LIMIT).map_err(|e| e.to_string())?;
+            let mut params = V0_10_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64;
+            params.glwe_dimension = GlweDimension(glwe_dim);
+            params.polynomial_size = PolynomialSize(poly_size);
+            params.lwe_dimension = LweDimension(small_lwe_dim);
 
-        // Generate eval keys from topology
-        let sk_buf = generate_concrete_eval_keys(&client_key, &topo)?;
+            let config = ConfigBuilder::default()
+                .use_custom_parameters(params)
+                .build();
+            let (client_key, _server_key) = tfhe::generate_keys(config);
+
+            let mut ck_buf = Vec::new();
+            safe_serialize(&client_key, &mut ck_buf, LIMIT).map_err(|e| e.to_string())?;
+
+            let sk_buf = generate_concrete_eval_keys(&client_key, &topo)?;
+            (ck_buf, sk_buf)
+        };
 
         let (ck_ptr, ck_len) = leak_buf(ck_buf);
         let (sk_ptr, sk_len) = leak_buf(sk_buf);
@@ -403,6 +443,9 @@ pub unsafe extern "C" fn fhe_encrypt(
     match panic::catch_unwind(|| -> Result<(), String> {
         let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
         let vals = slice::from_raw_parts(values, n_vals);
+        if ck_bytes.starts_with(b"LWEK") {
+            return Err("Raw LWE key cannot be used with TFHE-rs encrypt — use fhe_lwe_encrypt_seeded".into());
+        }
         let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
             .map_err(|e| e.to_string())?;
 
@@ -456,6 +499,9 @@ pub unsafe extern "C" fn fhe_decrypt(
     match panic::catch_unwind(|| -> Result<(), String> {
         let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
         let ct_bytes = slice::from_raw_parts(ct, ct_len);
+        if ck_bytes.starts_with(b"LWEK") {
+            return Err("Raw LWE key cannot be used with TFHE-rs decrypt — use fhe_lwe_decrypt_full".into());
+        }
         let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
             .map_err(|e| e.to_string())?;
 
@@ -528,6 +574,38 @@ fn extract_lwe_sk(ck: ClientKey)
     glwe_sk.into_lwe_secret_key()
 }
 
+/// Deserialize a client key (either TFHE-rs ClientKey or raw LWE key) and
+/// return the root LWE secret key.
+///
+/// Format detection:
+///   - Starts with b"LWEK" → raw LWE secret key (4-byte magic + 8-byte dim + bincode data)
+///   - Otherwise → TFHE-rs ClientKey (safe_serialize format, extracts via GLWE→LWE)
+fn extract_lwe_sk_from_bytes(ck_bytes: &[u8]) -> Result<LweSecretKeyOwned<u64>, String> {
+    if ck_bytes.len() >= 12 && &ck_bytes[0..4] == b"LWEK" {
+        let dim = u64::from_le_bytes(
+            ck_bytes[4..12].try_into().map_err(|_| "bad LWEK header".to_string())?
+        ) as usize;
+        let key_data: Vec<u64> = bincode::deserialize(&ck_bytes[12..])
+            .map_err(|e| format!("LWEK key deserialize: {e}"))?;
+        if key_data.len() != dim {
+            return Err(format!(
+                "LWEK key dimension mismatch: header says {dim}, data has {}",
+                key_data.len()
+            ));
+        }
+        Ok(LweSecretKey::from_container(key_data))
+    } else {
+        // Try as LweSecretKeyOwned<u64> first (Python-generated keys),
+        // then fall back to ClientKey (TFHE-rs keygen output).
+        if let Ok(sk) = safe_deserialize::<LweSecretKeyOwned<u64>>(Cursor::new(ck_bytes), LIMIT) {
+            return Ok(sk);
+        }
+        let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
+            .map_err(|e| e.to_string())?;
+        Ok(extract_lwe_sk(ck))
+    }
+}
+
 /// Encrypt quantized values using Concrete's seeded LWE encoding.
 ///
 /// Each value is bit-decomposed into `encoding_width` individual bits (LSB first).
@@ -551,14 +629,12 @@ pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
     match panic::catch_unwind(|| -> Result<(), String> {
         let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
         let vals = slice::from_raw_parts(values, n_vals);
-        let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
-            .map_err(|e| e.to_string())?;
 
         let width = encoding_width as usize;
         let lwe_dim = lwe_dimension as usize;
         let n_cts = n_vals * width;
 
-        let lwe_sk = extract_lwe_sk(ck);
+        let lwe_sk = extract_lwe_sk_from_bytes(ck_bytes)?;
         if lwe_sk.lwe_dimension().0 != lwe_dim {
             return Err(format!(
                 "ClientKey LWE dimension {} != expected {}",
@@ -610,7 +686,7 @@ pub unsafe extern "C" fn fhe_lwe_encrypt_seeded(
         Ok(())
     }) {
         Ok(Ok(())) => 0,
-        Ok(Err(_)) => -1,
+        Ok(Err(_e)) => -1,
         Err(_) => -2,
     }
 }
@@ -638,11 +714,9 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
 ) -> i32 {
     match panic::catch_unwind(|| -> Result<(), String> {
         let ck_bytes = slice::from_raw_parts(client_key, client_key_len);
-        let ck: ClientKey = safe_deserialize(Cursor::new(ck_bytes), LIMIT)
-            .map_err(|e| e.to_string())?;
 
         let lwe_dim = lwe_dimension as usize;
-        let ct_size = lwe_dim + 1; // u64 elements per ciphertext
+        let ct_size = lwe_dim + 1;
         let n = n_cts as usize;
         let width = encoding_width as usize;
         let signed = is_signed != 0;
@@ -656,7 +730,7 @@ pub unsafe extern "C" fn fhe_lwe_decrypt_full(
         }
 
         let ct_u64 = slice::from_raw_parts(ct as *const u64, n * ct_size);
-        let lwe_sk = extract_lwe_sk(ck);
+        let lwe_sk = extract_lwe_sk_from_bytes(ck_bytes)?;
 
         let shift = 64 - width;
         let half: u64 = 1u64 << (shift - 1);
@@ -1138,6 +1212,221 @@ mod tests {
         assert_eq!(body, recovered);
     }
 
+    /// Pure LWE keygen: topology with 1 SK, 0 BSKs, 0 KSKs.
+    #[test]
+    fn keygen_pure_lwe() {
+        let topo = Topology {
+            sks: vec![SkSpec { id: 0, dim: 629 }],
+            bsks: vec![],
+            ksks: vec![],
+        };
+
+        let packed = pack_topology_for_test(&topo);
+        let mut ck_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ck_len: usize = 0;
+        let mut sk_ptr: *mut u8 = std::ptr::null_mut();
+        let mut sk_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_keygen(
+                packed.as_ptr(), packed.len(),
+                &mut ck_ptr, &mut ck_len,
+                &mut sk_ptr, &mut sk_len,
+            )
+        };
+        assert_eq!(rc, 0, "fhe_keygen failed for pure LWE topology");
+
+        let ck_bytes = unsafe { slice::from_raw_parts(ck_ptr, ck_len) }.to_vec();
+        unsafe { fhe_free_buf(ck_ptr, ck_len); fhe_free_buf(sk_ptr, sk_len) };
+
+        // Verify LWEK magic header
+        assert_eq!(&ck_bytes[0..4], b"LWEK");
+        let dim = u64::from_le_bytes(ck_bytes[4..12].try_into().unwrap());
+        assert_eq!(dim, 629);
+
+        // Verify we can extract an LWE key
+        let lwe_sk = extract_lwe_sk_from_bytes(&ck_bytes).unwrap();
+        assert_eq!(lwe_sk.lwe_dimension().0, 629);
+    }
+
+    /// Pure LWE keygen + seeded encrypt + full decrypt round-trip.
+    #[test]
+    fn pure_lwe_encrypt_decrypt_round_trip() {
+        let dim: usize = 629;
+        let topo = Topology {
+            sks: vec![SkSpec { id: 0, dim: dim as u64 }],
+            bsks: vec![],
+            ksks: vec![],
+        };
+
+        let packed = pack_topology_for_test(&topo);
+        let mut ck_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ck_len: usize = 0;
+        let mut sk_ptr: *mut u8 = std::ptr::null_mut();
+        let mut sk_len: usize = 0;
+
+        let rc = unsafe {
+            fhe_keygen(
+                packed.as_ptr(), packed.len(),
+                &mut ck_ptr, &mut ck_len,
+                &mut sk_ptr, &mut sk_len,
+            )
+        };
+        assert_eq!(rc, 0);
+
+        let ck_bytes = unsafe { slice::from_raw_parts(ck_ptr, ck_len) }.to_vec();
+        unsafe { fhe_free_buf(ck_ptr, ck_len); fhe_free_buf(sk_ptr, sk_len) };
+
+        // Encrypt with seeded LWE
+        let values: Vec<i64> = vec![1, -3, 5, 0, 7];
+        let width: u32 = 6;
+        let variance: f64 = 7.582470500300597e-9;
+
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let rc = unsafe {
+            fhe_lwe_encrypt_seeded(
+                ck_bytes.as_ptr(), ck_bytes.len(),
+                values.as_ptr(), values.len(),
+                width, dim as u32, variance,
+                &mut ct_ptr, &mut ct_len,
+            )
+        };
+        assert_eq!(rc, 0, "fhe_lwe_encrypt_seeded failed with raw LWE key");
+
+        let ct_bytes = unsafe { slice::from_raw_parts(ct_ptr, ct_len) }.to_vec();
+        unsafe { fhe_free_buf(ct_ptr, ct_len) };
+
+        // Decompress seeded -> full for decrypt
+        let seed_bytes: [u8; 16] = ct_bytes[0..16].try_into().unwrap();
+        let seed = tfhe::core_crypto::commons::math::random::CompressionSeed {
+            seed: tfhe::core_crypto::commons::math::random::Seed(
+                u128::from_le_bytes(seed_bytes)),
+        };
+        let b_values: Vec<u64> = bytemuck::cast_slice::<u8, u64>(&ct_bytes[16..]).to_vec();
+        let n_cts = values.len() * width as usize;
+
+        let seeded_list = SeededLweCiphertextList::from_container(
+            b_values,
+            LweDimension(dim).to_lwe_size(),
+            seed,
+            CiphertextModulus::new_native(),
+        );
+
+        let mut full_ct_list = LweCiphertextList::new(
+            0u64,
+            LweDimension(dim).to_lwe_size(),
+            LweCiphertextCount(n_cts),
+            CiphertextModulus::new_native(),
+        );
+        decompress_seeded_lwe_ciphertext_list::<_, _, _, DefaultRandomGenerator>(
+            &mut full_ct_list, &seeded_list,
+        );
+
+        let full_ct_bytes = bytemuck::cast_slice::<u64, u8>(full_ct_list.as_ref());
+
+        // Decrypt per-bit
+        let mut scores_ptr: *mut i64 = std::ptr::null_mut();
+        let mut scores_len: usize = 0;
+        let rc = unsafe {
+            fhe_lwe_decrypt_full(
+                ck_bytes.as_ptr(), ck_bytes.len(),
+                full_ct_bytes.as_ptr(), full_ct_bytes.len(),
+                n_cts as u32,
+                1, 0, // width=1 per bit, unsigned
+                dim as u32,
+                &mut scores_ptr, &mut scores_len,
+            )
+        };
+        assert_eq!(rc, 0, "fhe_lwe_decrypt_full failed with raw LWE key");
+
+        let bits = unsafe { slice::from_raw_parts(scores_ptr, scores_len) }.to_vec();
+        unsafe { fhe_free_i64_buf(scores_ptr, scores_len) };
+
+        // Reassemble bits (LSB first, 6-bit signed)
+        for (i, &orig) in values.iter().enumerate() {
+            let mut reassembled: i64 = 0;
+            for bit_idx in 0..width as usize {
+                reassembled |= (bits[i * width as usize + bit_idx] & 1) << bit_idx;
+            }
+            // Sign-extend from 6 bits
+            if reassembled >= (1 << (width - 1)) {
+                reassembled -= 1 << width;
+            }
+            assert_eq!(reassembled, orig, "value[{i}] mismatch");
+        }
+    }
+
+    /// Helper: pack a Topology into the flat u64 format that fhe_keygen expects.
+    fn pack_topology_for_test(topo: &Topology) -> Vec<u64> {
+        let mut v = Vec::new();
+        v.push(topo.sks.len() as u64);
+        for sk in &topo.sks {
+            v.push(sk.id);
+            v.push(sk.dim);
+        }
+        v.push(topo.bsks.len() as u64);
+        for bsk in &topo.bsks {
+            v.push(bsk.input_id);
+            v.push(bsk.output_id);
+            v.push(bsk.level_count);
+            v.push(bsk.base_log);
+            v.push(bsk.glwe_dim);
+            v.push(bsk.poly_size);
+            v.push(bsk.input_lwe_dim);
+            v.push(bsk.variance.to_bits());
+        }
+        v.push(topo.ksks.len() as u64);
+        for ksk in &topo.ksks {
+            v.push(ksk.input_id);
+            v.push(ksk.output_id);
+            v.push(ksk.level_count);
+            v.push(ksk.base_log);
+            v.push(ksk.input_lwe_dim);
+            v.push(ksk.output_lwe_dim);
+            v.push(ksk.variance.to_bits());
+        }
+        v
+    }
+
+    /// fhe_encrypt must reject raw LWE keys (they lack a full TFHE-rs ClientKey).
+    #[test]
+    fn fhe_encrypt_rejects_raw_lwe_key() {
+        let topo = Topology {
+            sks: vec![SkSpec { id: 0, dim: 629 }],
+            bsks: vec![],
+            ksks: vec![],
+        };
+        let packed = pack_topology_for_test(&topo);
+        let mut ck_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ck_len: usize = 0;
+        let mut sk_ptr: *mut u8 = std::ptr::null_mut();
+        let mut sk_len: usize = 0;
+        let rc = unsafe {
+            fhe_keygen(
+                packed.as_ptr(), packed.len(),
+                &mut ck_ptr, &mut ck_len,
+                &mut sk_ptr, &mut sk_len,
+            )
+        };
+        assert_eq!(rc, 0);
+        let ck_bytes = unsafe { slice::from_raw_parts(ck_ptr, ck_len) }.to_vec();
+        unsafe { fhe_free_buf(ck_ptr, ck_len); fhe_free_buf(sk_ptr, sk_len) };
+
+        let values: Vec<i64> = vec![42];
+        let mut ct_ptr: *mut u8 = std::ptr::null_mut();
+        let mut ct_len: usize = 0;
+        let rc = unsafe {
+            fhe_encrypt(
+                ck_bytes.as_ptr(), ck_bytes.len(),
+                values.as_ptr(), values.len(),
+                8, 0,
+                &mut ct_ptr, &mut ct_len,
+            )
+        };
+        assert_eq!(rc, -1, "fhe_encrypt should reject raw LWE key");
+    }
+
     #[test]
     fn value_serialize_no_seed_stripping_when_uncompressed() {
         let payload = vec![0xCCu8; 120];
@@ -1230,5 +1519,31 @@ mod tests {
         assert_eq!(n_cts, 50); // product of shape[0..n-1] = 1*50
 
         unsafe { fhe_free_buf(ct_ptr, ct_len) };
+    }
+
+    #[test]
+    fn lwe_secret_key_round_trip_via_extract() {
+        // Create an LweSecretKey, serialize with safe_serialize, then
+        // deserialize via extract_lwe_sk_from_bytes (which tries
+        // LweSecretKeyOwned<u64> before falling back to ClientKey).
+        let mut seeder = new_seeder();
+        let mut sec_gen = SecretRandomGenerator::<DefaultRandomGenerator>::new(
+            seeder.as_mut().seed(),
+        );
+        let original: LweSecretKeyOwned<u64> = allocate_and_generate_new_binary_lwe_secret_key(
+            LweDimension(1024),
+            &mut sec_gen,
+        );
+
+        // Serialize via safe_serialize (same format Python LweSecretKey.serialize() uses)
+        let mut buf = Vec::new();
+        safe_serialize(&original, &mut buf, LIMIT).expect("serialize");
+
+        // Deserialize via our function
+        let recovered = extract_lwe_sk_from_bytes(&buf)
+            .expect("extract_lwe_sk_from_bytes should accept LweSecretKeyOwned format");
+
+        assert_eq!(original.lwe_dimension(), recovered.lwe_dimension());
+        assert_eq!(original.as_ref(), recovered.as_ref());
     }
 }
