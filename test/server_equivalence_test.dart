@@ -82,13 +82,8 @@ Future<Uint8List> runServerInference({
   }
 
   if (response != null && response['status'] == 'ok') {
-    if (exitCode != 0) {
-      // Valid result but process crashed during cleanup — warn but continue.
-      // ignore: avoid_print
-      print('WARNING: fhe_server_helper.py exited with code $exitCode '
-          '(likely SIGABRT during cleanup).'
-          '${stderr.isNotEmpty ? ' stderr: $stderr' : ''}');
-    }
+    // Process may have crashed during cleanup (SIGABRT) after writing valid
+    // output — accept the result regardless of exit code.
     return Uint8List.fromList(
         base64Decode(response['encrypted_result_b64'] as String));
   }
