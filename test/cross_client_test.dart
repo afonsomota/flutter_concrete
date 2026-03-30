@@ -44,16 +44,16 @@ import 'package:flutter_concrete/src/post_processing.dart';
 // Python server process helper
 // ---------------------------------------------------------------------------
 
-class _LoadResult {
+class LoadResult {
   final Uint8List secretKey;
   final Uint8List evalKey;
-  const _LoadResult({required this.secretKey, required this.evalKey});
+  const LoadResult({required this.secretKey, required this.evalKey});
 }
 
-class _RunResult {
+class RunResult {
   final String encryptedResultB64;
   final List<double> pythonScores;
-  const _RunResult(
+  const RunResult(
       {required this.encryptedResultB64, required this.pythonScores});
 }
 
@@ -89,24 +89,24 @@ class FheServerProcess {
     return response;
   }
 
-  Future<_LoadResult> load(String modelDir) async {
+  Future<LoadResult> load(String modelDir) async {
     final response = await _send({
       'command': 'load',
       'model_dir': modelDir,
     });
-    return _LoadResult(
+    return LoadResult(
       secretKey: base64Decode(response['secret_key_b64'] as String),
       evalKey: base64Decode(response['eval_key_b64'] as String),
     );
   }
 
-  Future<_RunResult> run(String modelDir, String encryptedInputB64) async {
+  Future<RunResult> run(String modelDir, String encryptedInputB64) async {
     final response = await _send({
       'command': 'run',
       'model_dir': modelDir,
       'encrypted_input_b64': encryptedInputB64,
     });
-    return _RunResult(
+    return RunResult(
       encryptedResultB64: response['encrypted_result_b64'] as String,
       pythonScores: (response['python_scores'] as List<dynamic>)
           .map((v) => (v as num).toDouble())
@@ -114,14 +114,14 @@ class FheServerProcess {
     );
   }
 
-  Future<_RunResult> encryptAndRun(
+  Future<RunResult> encryptAndRun(
       String modelDir, List<int> quantizedInput) async {
     final response = await _send({
       'command': 'encrypt_and_run',
       'model_dir': modelDir,
       'quantized_input': quantizedInput,
     });
-    return _RunResult(
+    return RunResult(
       encryptedResultB64: response['encrypted_result_b64'] as String,
       pythonScores: (response['python_scores'] as List<dynamic>)
           .map((v) => (v as num).toDouble())
