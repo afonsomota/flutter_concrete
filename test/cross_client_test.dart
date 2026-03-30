@@ -70,9 +70,7 @@ class FheServerProcess {
         // ignore: avoid_print
         .listen((line) => print('[python] $line'));
     _lines = StreamIterator(
-      _process!.stdout
-          .transform(utf8.decoder)
-          .transform(const LineSplitter()),
+      _process!.stdout.transform(utf8.decoder).transform(const LineSplitter()),
     );
   }
 
@@ -171,8 +169,7 @@ void testCrossClient(String dirName) {
       final serverZipFile = File('${dir.path}/server.zip');
       if (!serverZipFile.existsSync()) return;
 
-      final clientZipBytes =
-          File('${dir.path}/client.zip').readAsBytesSync();
+      final clientZipBytes = File('${dir.path}/client.zip').readAsBytesSync();
       parseResult = ClientZipParser.parse(Uint8List.fromList(clientZipBytes));
 
       if (parseResult.inputCipherInfo == null ||
@@ -259,7 +256,8 @@ void testCrossClient(String dirName) {
         final dartScores = pp.apply(dequantized, outputShape);
 
         // ignore: avoid_print
-        print('  [$description] dart=$dartScores python=${result.pythonScores}');
+        print(
+            '  [$description] dart=$dartScores python=${result.pythonScores}');
 
         expect(dartScores.length, result.pythonScores.length,
             reason: 'Score length mismatch for "$description"');
@@ -313,7 +311,8 @@ void testCrossClient(String dirName) {
         final dartScores = pp.apply(dequantized, outputShape);
 
         // ignore: avoid_print
-        print('  [$description] dart=$dartScores python=${result.pythonScores}');
+        print(
+            '  [$description] dart=$dartScores python=${result.pythonScores}');
 
         expect(dartScores.length, result.pythonScores.length,
             reason: 'Score length mismatch for "$description"');
