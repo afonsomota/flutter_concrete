@@ -89,6 +89,7 @@ MODELS = {
 # Worker script (runs in subprocess for each model)
 # ---------------------------------------------------------------------------
 WORKER_SCRIPT = r'''
+import base64
 import hashlib
 import json
 import shutil
@@ -301,13 +302,13 @@ def process_model(model_name, config, base_dir):
             # Per-class zero points
             zp_list = np.array(oq_zp).flatten()
             dequantized_flat = [
-                float((int(r) + oq_offset - int(zp_list[j % len(zp_list)])) * oq_scale)
+                float((int(r) - int(zp_list[j % len(zp_list)])) * oq_scale)
                 for j, r in enumerate(raw_flat)
             ]
         else:
             zp = int(oq_zp)
             dequantized_flat = [
-                float((int(r) + oq_offset - zp) * oq_scale)
+                float((int(r) - zp) * oq_scale)
                 for r in raw_flat
             ]
 
@@ -335,21 +336,50 @@ def process_model(model_name, config, base_dir):
             "post_processed": post_processed,
         })
 
+    # Generate keys and save for Dart test (secret key + evaluation key)
+    client.generate_private_and_evaluation_keys()
+
+    eval_key_bytes = client.get_serialized_evaluation_keys()
+    with open(str(out_dir / "eval_key.bin"), "wb") as f:
+        f.write(eval_key_bytes)
+    print(f"  Saved eval_key.bin ({len(eval_key_bytes)} bytes)")
+
+    keys = client.client.keys
+    secret_keys = keys._keyset.get_client_keys().get_secret_keys()
+    sk0_bytes = secret_keys[0].serialize()
+    with open(str(out_dir / "secret_key.bin"), "wb") as f:
+        f.write(sk0_bytes)
+    print(f"  Saved secret_key.bin ({len(sk0_bytes)} bytes)")
+
+    # Save full serialized keys (needed for cross-language decrypt tests)
+    full_keys_bytes = keys.serialize()
+    with open(str(out_dir / "full_keys.bin"), "wb") as f:
+        f.write(full_keys_bytes)
+    print(f"  Saved full_keys.bin ({len(full_keys_bytes)} bytes)")
+
     # Full FHE round-trip: encrypt → server.run → decrypt for each test vector
     print("  Running FHE round-trip for each test vector...")
     server = FHEModelServer(path_dir=str(fhe_dir))
     server.load()
-    eval_keys = client.get_serialized_evaluation_keys()
+    eval_keys = eval_key_bytes
 
     for i, vec in enumerate(test_vectors):
         x = np.array(vec["input_float"], dtype=np.float32).reshape(1, -1)
         encrypted = client.quantize_encrypt_serialize(x)
+        vec["encrypted_input_b64"] = base64.b64encode(encrypted).decode()
         encrypted_result = server.run(encrypted, eval_keys)
         if isinstance(encrypted_result, tuple):
             encrypted_result = encrypted_result[0]
-        result = client.deserialize_decrypt_dequantize(encrypted_result)
+        vec["encrypted_result_b64"] = base64.b64encode(encrypted_result).decode()
+
+        # Split deserialize_decrypt_dequantize to capture intermediate values
+        raw_quant = client.deserialize_decrypt(encrypted_result)
+        vec["python_raw_decrypt"] = np.array(raw_quant).flatten().tolist()
+        deq = client.model.dequantize_output(raw_quant)
+        vec["python_dequantized"] = np.array(deq).flatten().tolist()
+        result = client.model.post_processing(deq)
         vec["python_fhe_scores"] = np.array(result).flatten().tolist()
-        print(f"  Vector {i} ({vec['description']}): FHE scores = {vec['python_fhe_scores']}")
+        print(f"  Vector {i} ({vec['description']}): raw={vec['python_raw_decrypt']}, scores={vec['python_fhe_scores']}")
 
     # Build reference.json
     reference = {

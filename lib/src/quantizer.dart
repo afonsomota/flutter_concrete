@@ -9,11 +9,13 @@ import 'dart:typed_data';
 class InputQuantParam {
   final double scale;
   final int zeroPoint;
+  final int offset;
   final int nBits;
   final bool isSigned;
   const InputQuantParam({
     required this.scale,
     required this.zeroPoint,
+    this.offset = 0,
     this.nBits = 8,
     this.isSigned = false,
   });
@@ -58,6 +60,10 @@ class QuantizationParams {
   /// determined by [InputQuantParam.nBits] and [InputQuantParam.isSigned]:
   /// - Unsigned: [0, (1 << nBits) - 1]
   /// - Signed: [-(1 << (nBits - 1)), (1 << (nBits - 1)) - 1]
+  ///
+  /// Note: the input offset is NOT applied here (matching Python's
+  /// `quantize_input`).  It must be added separately before encryption
+  /// via [applyInputOffsets].
   Int64List quantizeInputs(Float32List features) {
     assert(
       features.length == input.length || input.length == 1,
@@ -79,9 +85,26 @@ class QuantizationParams {
     return result;
   }
 
+  /// Add input offsets to quantized values before encryption.
+  ///
+  /// The offset shifts signed quantized values into the unsigned range
+  /// expected by the FHE circuit.  Python's `fhe.Client.encrypt` does
+  /// this internally; since we use raw LWE encryption, we add it here.
+  Int64List applyInputOffsets(Int64List quantized) {
+    final result = Int64List(quantized.length);
+    for (int i = 0; i < quantized.length; i++) {
+      final p = input[i % input.length];
+      result[i] = quantized[i] + p.offset;
+    }
+    return result;
+  }
+
   /// Dequantize raw int64 output scores to float64 (element-wise).
   ///
-  /// Formula per element: `float = (raw + offset - zero_point) * scale`.
+  /// Formula per element: `float = (raw - zero_point) * scale`.
+  ///
+  /// The output quantizer's `offset` is NOT applied here — it matches
+  /// Python's `dequantize_output` which does `scale * (raw - zp)`.
   ///
   /// Model-specific post-processing (tree aggregation, softmax, etc.) is
   /// handled separately by [PostProcessing].
@@ -91,7 +114,7 @@ class QuantizationParams {
     final result = Float64List(rawScores.length);
     for (int i = 0; i < rawScores.length; i++) {
       final zp = zps != null ? zps[i % zps.length] : p.zeroPoint;
-      result[i] = (rawScores[i] + p.offset - zp) * p.scale;
+      result[i] = (rawScores[i] - zp) * p.scale;
     }
     return result;
   }

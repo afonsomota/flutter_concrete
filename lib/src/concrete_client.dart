@@ -147,6 +147,10 @@ class ConcreteClient {
   Uint8List quantizeAndEncrypt(Float32List features) {
     _requireReady();
     final quantized = _quantParams!.quantizeInputs(features);
+    // Apply input offsets to shift signed values into the unsigned range
+    // expected by the FHE circuit (Python's fhe.Client.encrypt does this
+    // internally).
+    final shifted = _quantParams!.applyInputOffsets(quantized);
 
     if (_inputCipherInfo != null) {
       final info = _inputCipherInfo!;
@@ -154,11 +158,13 @@ class ConcreteClient {
         throw UnsupportedError(
             'ConcreteClient: only native encoding mode is supported');
       }
-      // Concrete LWE path: seeded encrypt → serialize as Value
+      // Concrete LWE path: seeded encrypt → serialize as Value.
+      // concreteShape.last = number of bit-ciphertexts per input value,
+      // matching the circuit's expected input shape.
       final ct = _native.lweEncryptSeeded(
         _clientKey!,
-        quantized,
-        info.encodingWidth,
+        shifted,
+        info.concreteShape.last,
         info.lweDimension,
         info.variance,
       );
