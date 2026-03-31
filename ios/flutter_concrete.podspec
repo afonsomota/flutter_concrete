@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'flutter_concrete'
-  s.version          = '0.4.0'
+  s.version          = '0.5.0'
   s.summary          = 'Concrete ML FHE client for Flutter (TFHE-rs via Cargokit)'
   s.description      = 'Flutter FFI plugin wrapping TFHE-rs for Concrete ML FHE operations.'
   s.homepage         = 'https://github.com/afonsomota/flutter_concrete'
