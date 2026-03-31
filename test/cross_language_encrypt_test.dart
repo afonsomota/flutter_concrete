@@ -118,7 +118,8 @@ Future<PythonResult> pythonVerify({
   }
 
   if (response == null) {
-    fail('fhe_decrypt_helper.py produced invalid JSON.\nstdout: $stdoutPreview');
+    fail(
+        'fhe_decrypt_helper.py produced invalid JSON.\nstdout: $stdoutPreview');
   }
 
   fail('fhe_decrypt_helper.py error: ${response['error']}');
@@ -180,13 +181,11 @@ void testCrossLanguageEncrypt(String dirName) {
     // ------------------------------------------------------------------
     test('Dart encrypt/decrypt round-trip produces correct integers', () {
       if (!hasFixture) {
-        markTestSkipped(
-            '$dirName: fixture not found or not CONCRETE format.');
+        markTestSkipped('$dirName: fixture not found or not CONCRETE format.');
         return;
       }
       if (!hasKeys) {
-        markTestSkipped(
-            '$dirName: secret_key.bin or eval_key.bin not found.');
+        markTestSkipped('$dirName: secret_key.bin or eval_key.bin not found.');
         return;
       }
 
@@ -240,8 +239,7 @@ void testCrossLanguageEncrypt(String dirName) {
 
         for (int i = 0; i < quantized.length; i++) {
           expect(decrypted[i], quantized[i],
-              reason:
-                  'Round-trip mismatch at index $i for "$description": '
+              reason: 'Round-trip mismatch at index $i for "$description": '
                   'encrypted=${quantized[i]}, decrypted=${decrypted[i]}');
         }
       }
@@ -252,18 +250,15 @@ void testCrossLanguageEncrypt(String dirName) {
     // ------------------------------------------------------------------
     test('Python can deserialize Dart-produced Value bytes', () async {
       if (!hasFixture) {
-        markTestSkipped(
-            '$dirName: fixture not found or not CONCRETE format.');
+        markTestSkipped('$dirName: fixture not found or not CONCRETE format.');
         return;
       }
       if (!hasKeys) {
-        markTestSkipped(
-            '$dirName: secret_key.bin or eval_key.bin not found.');
+        markTestSkipped('$dirName: secret_key.bin or eval_key.bin not found.');
         return;
       }
       if (!hasFullKeys) {
-        markTestSkipped(
-            '$dirName: full_keys.bin not found. '
+        markTestSkipped('$dirName: full_keys.bin not found. '
             'Regenerate fixtures with updated generate_models.py.');
         return;
       }
@@ -329,8 +324,7 @@ void testCrossLanguageEncrypt(String dirName) {
           print('  [$description] Dart encrypted:   $quantized');
 
           expect(result.rawIntegers.length, quantized.length,
-              reason:
-                  'Length mismatch for "$description": '
+              reason: 'Length mismatch for "$description": '
                   'python=${result.rawIntegers.length}, '
                   'dart=${quantized.length}');
 

@@ -16,11 +16,12 @@ Internal
 
 Internal (Concrete LWE path)
   ConcreteCipherInfo — LWE encryption/encoding params parsed from client.specs.json
-  FheNative.lweEncryptSeeded / lweDecryptFull / serializeValue / deserializeValue
+  FheNative.lweEncryptSeeded / lweDecryptFull / lweDecryptSeeded / serializeValue / deserializeValue
 
 Native (rust/)
   lib.rs          — C FFI: fhe_keygen, fhe_encrypt, fhe_decrypt, fhe_lwe_encrypt_seeded,
-                    fhe_lwe_decrypt_full, fhe_serialize_value, fhe_deserialize_value, fhe_free_buf
+                    fhe_lwe_decrypt_full, fhe_lwe_decrypt_seeded, fhe_serialize_value,
+                    fhe_deserialize_value, fhe_free_buf
   Cargo.toml      — tfhe (git rev matching concrete-ml-extensions 0.2.0), bincode, capnp
   build.rs        — compiles Cap'n Proto schema for evaluation key + ciphertext serialization
   schema/concrete-protocol.capnp — ServerKeyset + Value wire format
@@ -65,6 +66,7 @@ flutter test                                          # unit tests (no native li
 flutter test --tags=integration --exclude-tags=backend  # all integration (needs cargo build + Python + fixtures)
 flutter test --tags=equivalence                        # equivalence tests only
 flutter test --tags=cross_client                       # cross-client tests only
+flutter test --tags=cross_language                     # cross-language encrypt tests only
 ```
 
 Unit tests cover `ClientZipParser`, `ConcreteClient` state machine, and `PostProcessing`. No native lib needed.
@@ -73,6 +75,10 @@ Unit tests cover `ClientZipParser`, `ConcreteClient` state machine, and `PostPro
 
 Build first: `cd rust && cargo build`, then set `DYLD_LIBRARY_PATH=rust/target/debug` (macOS) or `LD_LIBRARY_PATH=rust/target/debug` (Linux).
 
+- **`encrypt_decrypt_roundtrip_test.dart`** (`integration` tag): Validates that `lweEncryptSeeded` → `lweDecryptSeeded` roundtrip produces identical integers. For each CONCRETE-format model: quantize → apply input offsets → encrypt → decrypt → exact integer match. Fully deterministic, no server or Python needed.
+- **`cross_language_encrypt_test.dart`** (`integration`, `cross_language` tags): Two checks per CONCRETE-format model:
+  - **Check 1 (Dart roundtrip):** Same encrypt/decrypt roundtrip as above.
+  - **Check 2 (Python format verification):** Sends Dart-serialized Cap'n Proto Value to Python `fhe.Value.deserialize()` to verify wire format compatibility. Decrypts via `FHEModelClient` where input/output specs match; skips decryption otherwise (signedness or shape mismatch).
 - **`python_equivalence_test.dart`** (`equivalence` tag): Tests quantization, dequantization, and post-processing against Python reference values from `test/fixtures/*/reference.json`. No server or FHE encryption — uses synthetic `raw_output_ints`. Requires generated fixtures.
 - **`cross_client_test.dart`** (`cross_client` tag): Exercises the production `ConcreteClient` API against a long-lived Python FHE server (single MLIR compilation per model, fresh keys at test time). Two tests per model:
   - **Test 1 (Dart encrypt):** `ConcreteClient.quantizeAndEncrypt` → server → `decryptAndDequantize`. Checks finiteness (encryption noise at n_bits=3 causes score divergence).

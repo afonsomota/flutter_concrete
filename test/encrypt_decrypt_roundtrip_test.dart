@@ -131,7 +131,8 @@ void testEncryptDecryptRoundtrip(String dirName) {
         }
 
         // ignore: avoid_print
-        print('  [$description] roundtrip OK: ${toEncrypt.length} values match');
+        print(
+            '  [$description] roundtrip OK: ${toEncrypt.length} values match');
       }
     });
   });
