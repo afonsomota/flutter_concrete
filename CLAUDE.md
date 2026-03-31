@@ -62,8 +62,9 @@ To set up: store the private signing key as `PRECOMPILE_PRIVATE_KEY` secret in t
 
 ```bash
 flutter test                                          # unit tests (no native lib needed)
-flutter test --tags=integration --exclude-tags=backend,server_equivalence,equivalence  # integration (needs cargo build)
-flutter test --tags="server_equivalence || equivalence"  # server equivalence (needs Python + fixtures)
+flutter test --tags=integration --exclude-tags=backend  # all integration (needs cargo build + Python + fixtures)
+flutter test --tags=equivalence                        # equivalence tests only
+flutter test --tags=cross_client                       # cross-client tests only
 ```
 
 Unit tests cover `ClientZipParser`, `ConcreteClient` state machine, and `PostProcessing`. No native lib needed.
@@ -73,9 +74,9 @@ Unit tests cover `ClientZipParser`, `ConcreteClient` state machine, and `PostPro
 Build first: `cd rust && cargo build`, then set `DYLD_LIBRARY_PATH=rust/target/debug` (macOS) or `LD_LIBRARY_PATH=rust/target/debug` (Linux).
 
 - **`python_equivalence_test.dart`** (`equivalence` tag): Tests quantization, dequantization, and post-processing against Python reference values from `test/fixtures/*/reference.json`. No server or FHE encryption — uses synthetic `raw_output_ints`. Requires generated fixtures.
-- **`server_equivalence_test.dart`** (`server_equivalence` tag): Two tests per model:
-  - **Test A (exact decrypt):** Decrypts saved encrypted server output (`encrypted_result_b64` from fixtures) and compares scores to Python's 1e-4 tolerance. Same MLIR compilation → deterministic.
-  - **Test B (round-trip sanity):** Dart encrypts → Python server → Dart decrypts. Checks output is finite. **Scores differ from Python** due to MLIR non-determinism (see below).
+- **`cross_client_test.dart`** (`cross_client` tag): Exercises the production `ConcreteClient` API against a long-lived Python FHE server (single MLIR compilation per model, fresh keys at test time). Two tests per model:
+  - **Test 1 (Dart encrypt):** `ConcreteClient.quantizeAndEncrypt` → server → `decryptAndDequantize`. Checks finiteness (encryption noise at n_bits=3 causes score divergence).
+  - **Test 2 (Python encrypt):** Python encrypts → server → Dart `decryptAndDequantize`. Same ciphertext → exact score match (1e-4).
 
 ### Fixture Generation
 
@@ -89,7 +90,7 @@ Some models (xgb_classifier_multiclass, logistic_regression) may SIGABRT on macO
 
 ### MLIR Non-Determinism
 
-`server.zip` contains MLIR source, not compiled binaries. Each `FHEModelServer.load()` JIT-compiles the circuit. **This compilation is non-deterministic even on the same machine between processes** — different instruction scheduling / FP rounding produces different circuits. With `n_bits=3` toy models, this flips argmax predictions. This is why Test A uses saved server output (same compilation) and Test B only checks finiteness.
+`server.zip` contains MLIR source, not compiled binaries. Each `FHEModelServer.load()` JIT-compiles the circuit. **This compilation is non-deterministic even on the same machine between processes** — different instruction scheduling / FP rounding produces different circuits. With `n_bits=3` toy models, this flips argmax predictions. The cross-client test eliminates this by using a single long-lived Python server process per model.
 
 ## Encoding Conventions (Concrete vs TFHE-rs)
 

@@ -5,7 +5,6 @@
 - **Unit tests** — pure Dart, no tags. Cover quantizer, post-processing, client.zip parser, key topology, circuit encoding. Run with `flutter test`.
 - **Python equivalence tests** — tagged `equivalence`. Verify Dart's quantization, dequantization, and post-processing match Python's concrete-ml numerically. Use pre-generated fixtures. Run with `flutter test -t equivalence`.
 - **Cross-client tests** — tagged `integration`, `cross_client`. Uses a long-lived Python server process (single MLIR compilation) with fresh keys generated at test time. Exercises the production `ConcreteClient` API. Two tests per model: (1) Dart encrypts via `quantizeAndEncrypt`, checks finiteness of round-trip; (2) Python encrypts, both decrypt same ciphertext, exact score match. Run on main push only in CI.
-- **Server equivalence tests** — tagged `integration`, `server_equivalence`. Full FHE round-trip: Dart encrypts via Rust FFI, Python `FHEModelServer` runs inference, Dart decrypts, and results are compared against pre-computed Python FHE scores. Requires native lib + Python with concrete-ml. Run on main push only in CI.
 - **Integration tests** — tagged `integration`. Require native Rust library (`libfhe_client`). Run with `flutter test -t integration`.
 
 ## Running tests
@@ -13,13 +12,13 @@
 ```bash
 flutter test                                  # unit + equivalence tests (integration excluded)
 flutter test -t equivalence                   # equivalence tests only
-flutter test -t integration                   # integration tests (needs native lib)
-flutter test -t server_equivalence            # server equivalence tests (needs native lib + Python)
+flutter test -t integration                   # integration tests (needs native lib + Python)
+flutter test -t cross_client                  # cross-client tests only
 ```
 
-### Server equivalence tests
+### Cross-client tests
 
-These tests verify that Dart and Python FHE clients produce the same predictions when both encrypt the same input and run inference on the same `FHEModelServer`.
+Verify that Dart's `ConcreteClient` API produces correct FHE results against a Python `FHEModelServer`. Uses a long-lived Python server process (one MLIR compilation per model) with fresh keys generated at test time.
 
 ```bash
 # 1. Build native library
@@ -32,10 +31,10 @@ source .venv/bin/activate
 cd ../..
 
 # 3. Run (macOS)
-DYLD_LIBRARY_PATH=rust/target/debug flutter test -t server_equivalence
+DYLD_LIBRARY_PATH=rust/target/debug flutter test -t cross_client
 
 # 3. Run (Linux)
-LD_LIBRARY_PATH=rust/target/debug flutter test -t server_equivalence
+LD_LIBRARY_PATH=rust/target/debug flutter test -t cross_client
 ```
 
 The test will **fail** (not skip) if `python3` with `concrete-ml` is not on PATH.
@@ -46,7 +45,7 @@ The test will **fail** (not skip) if `python3` with `concrete-ml` is not on PATH
 
 Each `reference.json` includes:
 - Quantized inputs, dequantized outputs, and post-processed values for offline equivalence tests
-- `python_fhe_scores`: full Python FHE round-trip results (encrypt → server.run → decrypt) for server equivalence tests
+- `python_fhe_scores`: full Python FHE round-trip results (encrypt → server.run → decrypt)
 
 ### Setup
 
@@ -68,7 +67,7 @@ python generate_models.py
 
 ### Notes
 
-Some models may segfault during LLVM compilation on ARM (macOS). The script retries automatically; models that still fail will be missing `server.zip` and skipped in server equivalence tests. Run on x86 Linux for full coverage.
+Some models may segfault during LLVM compilation on ARM (macOS). The script retries automatically; models that still fail will be missing `server.zip` and skipped in cross-client tests. Run on x86 Linux for full coverage.
 
 ### Known limitations
 
